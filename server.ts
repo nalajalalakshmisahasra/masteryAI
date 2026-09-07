@@ -1,6 +1,7 @@
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
+import crypto from 'crypto';
 import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
 import { createServer as createViteServer } from 'vite';
@@ -12,7 +13,161 @@ dotenv.config();
 const app = express();
 const PORT = 3000;
 
-app.use(express.json({ limit: '20mb' }));
+const REQUEST_WINDOW_MS = 60_000;
+const requestBuckets = new Map<string, { count: number; resetAt: number }>();
+const MAX_STRING_LENGTH = 5000;
+const ALLOWED_ORIGINS = new Set(
+  (process.env.ALLOWED_ORIGINS || 'http://localhost:3000,http://localhost:5173,http://localhost:5174')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean)
+);
+
+function clientError(res: express.Response, status: number, error: string) {
+  return res.status(status).json({ error });
+}
+
+function rateLimit(name: string, limit: number) {
+  return (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    const now = Date.now();
+    if (requestBuckets.size > 10000) {
+      for (const [bucketKey, bucketValue] of requestBuckets) {
+        if (bucketValue.resetAt <= now) requestBuckets.delete(bucketKey);
+      }
+    }
+    const key = `${name}:${req.ip || req.socket.remoteAddress || 'unknown'}`;
+    const bucket = requestBuckets.get(key);
+    if (!bucket || bucket.resetAt <= now) {
+      requestBuckets.set(key, { count: 1, resetAt: now + REQUEST_WINDOW_MS });
+      return next();
+    }
+    bucket.count += 1;
+    if (bucket.count > limit) {
+      res.setHeader('Retry-After', Math.ceil((bucket.resetAt - now) / 1000));
+      return clientError(res, 429, 'Too many requests. Please try again later.');
+    }
+    return next();
+  };
+}
+
+function validateBody(allowed: string[], required: string[] = []) {
+  return (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    const body = req.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return clientError(res, 400, 'Invalid request body');
+    }
+    const unknown = Object.keys(body).filter((key) => !allowed.includes(key));
+    if (unknown.length > 0 || required.some((key) => body[key] === undefined)) {
+      return clientError(res, 400, 'Invalid request fields');
+    }
+    return next();
+  };
+}
+
+function validateString(field: string, max = MAX_STRING_LENGTH, required = false) {
+  return (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    const value = req.body?.[field];
+    if (value === undefined && !required) return next();
+    if (typeof value !== 'string' || value.trim().length === 0 || value.length > max) {
+      return clientError(res, 400, `Invalid ${field}`);
+    }
+    return next();
+  };
+}
+
+function validateParam(field: string, pattern: RegExp) {
+  return (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (!pattern.test(req.params[field] || '')) return clientError(res, 400, 'Invalid route parameter');
+    return next();
+  };
+}
+
+function rejectOversizedRouteBodies(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const contentLength = Number(req.header('content-length') || 0);
+  if (!contentLength) return next();
+  const route = req.url.replace(/^\/api\/v1/, '/api');
+  const limit = route.startsWith('/api/ai/')
+    ? 256 * 1024
+    : route.startsWith('/api/users')
+      ? 32 * 1024
+      : route.startsWith('/api/inquiries')
+        ? 256 * 1024
+        : route.startsWith('/api/products')
+          ? 20 * 1024 * 1024
+          : 256 * 1024;
+  if (contentLength > limit) return clientError(res, 413, 'Request body is too large');
+  return next();
+}
+
+function validateProductInput(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const body = req.body;
+  const stringFields = PRODUCT_FIELDS.filter((field) => ![
+    'suggestedPriceMin', 'suggestedPriceMax', 'recommendedPrice', 'finalPrice', 'stockQuantity',
+    'customizationAvailable', 'translations',
+  ].includes(field));
+  if (stringFields.some((field) => body[field] !== undefined &&
+      (typeof body[field] !== 'string' || body[field].length > MAX_STRING_LENGTH))) {
+    return clientError(res, 400, 'Invalid product fields');
+  }
+  for (const field of ['suggestedPriceMin', 'suggestedPriceMax', 'recommendedPrice', 'finalPrice', 'stockQuantity']) {
+    if (body[field] !== undefined && (typeof body[field] !== 'number' || !Number.isFinite(body[field]) || body[field] < 0)) {
+      return clientError(res, 400, 'Invalid product fields');
+    }
+  }
+  if (body.customizationAvailable !== undefined && typeof body.customizationAvailable !== 'boolean') {
+    return clientError(res, 400, 'Invalid product fields');
+  }
+  return next();
+}
+
+function validateInquiryInput(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const quantity = req.body?.requestedQuantity;
+  if (quantity !== undefined && (!Number.isInteger(quantity) || quantity < 1 || quantity > 10000)) {
+    return clientError(res, 400, 'Invalid requested quantity');
+  }
+  for (const field of ['productTitle', 'productImage', 'customerName', 'customerPhone', 'artisanName']) {
+    if (req.body?.[field] !== undefined && typeof req.body[field] !== 'string') return clientError(res, 400, 'Invalid inquiry fields');
+  }
+  return next();
+}
+
+function validateMessageInput(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const text = req.body?.originalText ?? req.body?.text;
+  if (typeof text !== 'string' || text.trim().length === 0 || text.length > 5000) {
+    return clientError(res, 400, 'Invalid message text');
+  }
+  return next();
+}
+
+app.disable('x-powered-by');
+app.set('trust proxy', 1);
+app.use((req, res, next) => {
+  const origin = req.header('origin');
+  if (origin && ALLOWED_ORIGINS.has(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+    res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  }
+  if (process.env.NODE_ENV === 'production' && req.secure) {
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  }
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  if (req.method === 'OPTIONS') return res.sendStatus(origin && ALLOWED_ORIGINS.has(origin) ? 204 : 403);
+  return next();
+});
+app.use(rateLimit('api', 120));
+app.use(rejectOversizedRouteBodies);
+app.use(express.json({ limit: '20mb', strict: true }));
+app.use((err: any, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (err?.type === 'entity.too.large' || err instanceof SyntaxError) {
+    return clientError(res, 400, err?.type === 'entity.too.large' ? 'Request body is too large' : 'Malformed JSON');
+  }
+  return next(err);
+});
 
 // Support both /api/* and /api/v1/* (for Expo mobile & web clients)
 app.use((req, res, next) => {
@@ -23,8 +178,12 @@ app.use((req, res, next) => {
 });
 
 // Persistence Setup
-const DATA_DIR = path.join(process.cwd(), 'data');
+const DATA_DIR = path.resolve(process.env.STORE_DATA_DIR || path.join(process.cwd(), 'data'));
 const DATA_FILE = path.join(DATA_DIR, 'craft_mastery_store.json');
+const MEDIA_DIR = path.resolve(process.env.MEDIA_STORAGE_DIR || path.join(DATA_DIR, 'private-media'));
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+const MAX_IMAGES_PER_PRODUCT = 2;
+const DATA_URL_PATTERN = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/;
 const DEMO_DATA_ENABLED = process.env.NODE_ENV !== 'production' && process.env.DEMO_DATA_ENABLED === 'true';
 const DEMO_PRODUCT_IDS = new Set([
   'prod-kondapalli-01', 'prod-pochampally-02', 'prod-dokra-03', 'prod-bluepottery-04',
@@ -36,6 +195,15 @@ const DEMO_INQUIRY_IDS = new Set(['inq-bulk-001', 'inq-bulk-002']);
 let productsDb: any[] = [];
 let inquiriesDb: any[] = [];
 let usersDb: any[] = [];
+let filesDb: Array<{
+  id: string;
+  productId: string;
+  ownerUid: string;
+  mimeType: 'image/jpeg' | 'image/png' | 'image/webp';
+  size: number;
+  storageKey: string;
+  createdAt: string;
+}> = [];
 
 function saveStoreToDisk() {
   try {
@@ -49,6 +217,7 @@ function saveStoreToDisk() {
           products: productsDb,
           inquiries: inquiriesDb,
           users: usersDb,
+          files: filesDb,
           savedAt: new Date().toISOString(),
         },
         null,
@@ -61,17 +230,124 @@ function saveStoreToDisk() {
   }
 }
 
+function imageSignature(buffer: Buffer): 'image/jpeg' | 'image/png' | 'image/webp' | null {
+  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return 'image/jpeg';
+  if (buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'image/png';
+  if (buffer.length >= 12 && buffer.toString('ascii', 0, 4) === 'RIFF' && buffer.toString('ascii', 8, 12) === 'WEBP') return 'image/webp';
+  return null;
+}
+
+function isStructurallyValidImage(buffer: Buffer, mimeType: 'image/jpeg' | 'image/png' | 'image/webp'): boolean {
+  if (mimeType === 'image/jpeg') {
+    return buffer.length >= 5 && buffer[buffer.length - 2] === 0xff && buffer[buffer.length - 1] === 0xd9;
+  }
+  if (mimeType === 'image/png') {
+    return buffer.length >= 33 && buffer.toString('ascii', 12, 16) === 'IHDR' && buffer.includes(Buffer.from('IEND'));
+  }
+  return buffer.length >= 20 && buffer.readUInt32LE(4) <= buffer.length - 8;
+}
+
+function storeImageDataUrl(dataUrl: unknown, productId: string, ownerUid: string): string | null {
+  if (typeof dataUrl !== 'string' || !dataUrl) return null;
+  const match = DATA_URL_PATTERN.exec(dataUrl);
+  if (!match) throw new Error('Unsupported image format');
+  const declaredMime = match[1] as 'image/jpeg' | 'image/png' | 'image/webp';
+  const buffer = Buffer.from(match[2], 'base64');
+  if (buffer.length === 0 || buffer.length > MAX_IMAGE_BYTES) throw new Error('Image exceeds the permitted size');
+  const actualMime = imageSignature(buffer);
+  if (!actualMime || actualMime !== declaredMime || !isStructurallyValidImage(buffer, actualMime)) {
+    throw new Error('Image content does not match its declared type');
+  }
+
+  fs.mkdirSync(MEDIA_DIR, { recursive: true });
+  const id = crypto.randomUUID();
+  const extension = actualMime === 'image/jpeg' ? 'jpg' : actualMime.slice('image/'.length);
+  const storageKey = `${id}.${extension}`;
+  fs.writeFileSync(path.join(MEDIA_DIR, storageKey), buffer, { flag: 'wx', mode: 0o600 });
+  filesDb.push({ id, productId, ownerUid, mimeType: actualMime, size: buffer.length, storageKey, createdAt: new Date().toISOString() });
+  return `/api/files/${id}`;
+}
+
+function removeStoredFile(file: (typeof filesDb)[number]): void {
+  const absolutePath = path.join(MEDIA_DIR, file.storageKey);
+  if (path.dirname(absolutePath) !== path.resolve(MEDIA_DIR)) return;
+  try { fs.rmSync(absolutePath, { force: true }); } catch (err) { console.error('[Media] Failed to remove file:', err); }
+}
+
+function resolveMediaReference(value: unknown, auth: NonNullable<Express.Request['auth']>): string {
+  if (typeof value !== 'string' || !value.startsWith('/api/files/')) return typeof value === 'string' ? value : '';
+  const file = validateStoredFileAccess(value.slice('/api/files/'.length), auth);
+  if (!file || !/^[0-9a-f-]{36}\.(jpg|png|webp)$/.test(file.storageKey)) return '';
+  try {
+    const bytes = fs.readFileSync(path.join(MEDIA_DIR, file.storageKey));
+    return `data:${file.mimeType};base64,${bytes.toString('base64')}`;
+  } catch (err) {
+    console.error('[Media] Failed to resolve stored reference:', err);
+    return '';
+  }
+}
+
+function hydrateProductMedia(product: any, auth: NonNullable<Express.Request['auth']>): any {
+  return {
+    ...product,
+    originalImageUrl: resolveMediaReference(product.originalImageUrl, auth),
+    enhancedImageUrl: resolveMediaReference(product.enhancedImageUrl, auth),
+  };
+}
+
+function storeProductMedia(product: any, ownerUid: string): any {
+  const values = [product.originalImageUrl, product.enhancedImageUrl].filter(Boolean);
+  if (values.length > MAX_IMAGES_PER_PRODUCT) throw new Error('Too many images');
+  const storedKeys: string[] = [];
+  try {
+    const originalImageUrl = storeImageDataUrl(product.originalImageUrl, product.id, ownerUid);
+    if (originalImageUrl) storedKeys.push(originalImageUrl);
+    const enhancedImageUrl = storeImageDataUrl(product.enhancedImageUrl, product.id, ownerUid);
+    if (enhancedImageUrl) storedKeys.push(enhancedImageUrl);
+    return { ...product, originalImageUrl, enhancedImageUrl };
+  } catch (err) {
+    for (const reference of storedKeys) {
+      const file = filesDb.find((item) => `/api/files/${item.id}` === reference);
+      if (file) {
+        removeStoredFile(file);
+        filesDb = filesDb.filter((item) => item.id !== file.id);
+      }
+    }
+    throw err;
+  }
+}
+
+function reconcileStoredFiles(): void {
+  const validFiles = filesDb.filter((file) => {
+    return /^[0-9a-f-]{36}\.(jpg|png|webp)$/.test(file.storageKey) && fs.existsSync(path.join(MEDIA_DIR, file.storageKey));
+  });
+  const validReferences = new Set(validFiles.map((file) => `/api/files/${file.id}`));
+  let changed = validFiles.length !== filesDb.length;
+  filesDb = validFiles;
+  for (const product of productsDb) {
+    for (const field of ['originalImageUrl', 'enhancedImageUrl']) {
+      if (typeof product[field] === 'string' && product[field].startsWith('/api/files/') && !validReferences.has(product[field])) {
+        product[field] = '';
+        changed = true;
+      }
+    }
+  }
+  if (changed) saveStoreToDisk();
+}
+
 function isDemoProduct(product: any): boolean {
   return DEMO_PRODUCT_IDS.has(product?.id);
 }
 
 function visibleProductsFor(auth: NonNullable<Express.Request['auth']>): any[] {
   const products = DEMO_DATA_ENABLED ? productsDb : productsDb.filter((product) => !isDemoProduct(product));
-  if (auth.role === 'ADMIN') return products;
+  if (auth.role === 'ADMIN') return products.map((product) => hydrateProductMedia(product, auth));
   if (auth.role === 'ARTISAN') {
-    return products.filter((product) => product.artisanId === auth.uid || samePhone(product.artisanPhone, auth.phone));
+    return products
+      .filter((product) => product.artisanId === auth.uid || samePhone(product.artisanPhone, auth.phone))
+      .map((product) => hydrateProductMedia(product, auth));
   }
-  return products.map(({ artisanId, artisanPhone, ...product }) => product);
+  return products.map(({ artisanId, artisanPhone, ...product }) => hydrateProductMedia(product, auth));
 }
 
 function visibleInquiriesFor(auth: NonNullable<Express.Request['auth']>): any[] {
@@ -106,6 +382,9 @@ function loadStoreFromDisk() {
       if (Array.isArray(parsed.users)) {
         usersDb = parsed.users;
       }
+      if (Array.isArray(parsed.files)) {
+        filesDb = parsed.files;
+      }
       console.log(`[Store] Loaded ${productsDb.length} products, ${inquiriesDb.length} inquiries, ${usersDb.length} users from disk.`);
       return true;
     }
@@ -113,6 +392,14 @@ function loadStoreFromDisk() {
     console.error('Failed to load store from disk:', err);
   }
   return false;
+}
+function validateStoredFileAccess(fileId: string, auth: NonNullable<Express.Request['auth']>) {
+  const file = filesDb.find((item) => item.id === fileId);
+  if (!file) return null;
+  if (auth.role === 'ADMIN' || file.ownerUid === auth.uid) return file;
+  const product = productsDb.find((item) => item.id === file.productId);
+  if (auth.role === 'CUSTOMER' && product?.status === 'PUBLISHED') return file;
+  return null;
 }
 
 // Lazy Gemini AI initialization with aistudio-build User-Agent
@@ -149,6 +436,90 @@ const LANGUAGE_NAMES: Record<string, string> = {
   as: 'Assamese (অসমীয়া)',
   ur: 'Urdu (اردو)',
 };
+const SUPPORTED_LANGUAGES = new Set(Object.keys(LANGUAGE_NAMES));
+const AI_PRODUCT_FIELDS = ['productName', 'category', 'material', 'craftTechnique', 'dimensions', 'weight', 'timeToMake', 'features'];
+const PRODUCT_FIELDS = [
+  'title', 'shortDescription', 'fullDescription', 'category', 'material', 'craftTechnique', 'dimensions',
+  'weight', 'timeToMake', 'region', 'originalImageUrl', 'enhancedImageUrl', 'suggestedPriceMin',
+  'suggestedPriceMax', 'recommendedPrice', 'finalPrice', 'pricingReason', 'stockQuantity',
+  'customizationAvailable', 'translations',
+];
+
+function validateLanguage(field: string) {
+  return (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    const language = req.body?.[field];
+    if (language !== undefined && (typeof language !== 'string' || !SUPPORTED_LANGUAGES.has(language))) {
+      return clientError(res, 400, `Invalid ${field}`);
+    }
+    return next();
+  };
+}
+
+function validateAIProductData(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const productData = req.body?.productData;
+  if (!productData || typeof productData !== 'object' || Array.isArray(productData)) {
+    return clientError(res, 400, 'Invalid product data');
+  }
+  if (Object.keys(productData).some((key) => !AI_PRODUCT_FIELDS.includes(key))) {
+    return clientError(res, 400, 'Invalid product data');
+  }
+  for (const field of AI_PRODUCT_FIELDS) {
+    if (field !== 'features' && productData[field] !== undefined &&
+        (typeof productData[field] !== 'string' || productData[field].length > 1000)) {
+      return clientError(res, 400, 'Invalid product data');
+    }
+  }
+  if (productData.features !== undefined &&
+      (!Array.isArray(productData.features) || productData.features.length > 20 ||
+        productData.features.some((item: unknown) => typeof item !== 'string' || item.length > 300))) {
+    return clientError(res, 400, 'Invalid product data');
+  }
+  return next();
+}
+
+function validateConversationHistory(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const history = req.body?.conversationHistory;
+  if (history !== undefined && (!Array.isArray(history) || history.length > 20 || history.some((item) => {
+    return !item || typeof item !== 'object' || typeof item.role !== 'string' ||
+      typeof item.content !== 'string' || item.content.length > 2000;
+  }))) {
+    return clientError(res, 400, 'Invalid conversation history');
+  }
+  return next();
+}
+
+function validateGuidanceProduct(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const product = req.body?.product;
+  if (product === undefined) {
+    if (typeof req.body?.productId !== 'string' || req.body.productId.length > 128 ||
+        typeof req.body?.productTitle !== 'string' || req.body.productTitle.length > 1000 ||
+        typeof req.body?.intent !== 'string' || req.body.intent.length > 100 ||
+        (req.body.customQuestion !== undefined && (typeof req.body.customQuestion !== 'string' || req.body.customQuestion.length > 2000))) {
+      return clientError(res, 400, 'Invalid product guidance request');
+    }
+    return next();
+  }
+  if (typeof product !== 'object' || Array.isArray(product)) {
+    return clientError(res, 400, 'Invalid product');
+  }
+  const allowed = [
+    'id', 'title', 'finalPrice', 'material', 'craftTechnique', 'timeToMake', 'region', 'artisanName',
+    'artisanId', 'artisanPhone', 'artisanLanguage', 'category', 'shortDescription', 'fullDescription',
+    'dimensions', 'weight', 'stockQuantity', 'status', 'translations',
+  ];
+  if (Object.keys(product).some((key) => !allowed.includes(key))) return clientError(res, 400, 'Invalid product');
+  for (const key of allowed) {
+    if (product[key] !== undefined && typeof product[key] !== 'string' && typeof product[key] !== 'number') {
+      return clientError(res, 400, 'Invalid product');
+    }
+    if (typeof product[key] === 'string' && product[key].length > 1000) return clientError(res, 400, 'Invalid product');
+  }
+  return next();
+}
+
+const aiRateLimit = rateLimit('ai', 12);
+const mutationRateLimit = rateLimit('mutation', 30);
+const authRateLimit = rateLimit('auth', 60);
 
 // -------------------------------------------------------------
 // API Endpoints
@@ -187,10 +558,40 @@ app.get('/api/services/status', (req, res) => {
 });
 
 // All application data, AI, profile, and mutation routes require a verified identity.
-app.use('/api', requireAuth);
+app.use('/api', authRateLimit, requireAuth);
+app.use('/api/ai', aiRateLimit);
+app.use('/api/products', mutationRateLimit);
+app.use('/api/inquiries', mutationRateLimit);
+app.use('/api/users', mutationRateLimit);
+
+app.get('/api/files/:id', validateParam('id', /^[0-9a-f-]{36}$/), (req, res) => {
+  const file = validateStoredFileAccess(req.params.id, req.auth!);
+  if (!file || !/^[0-9a-f-]{36}\.(jpg|png|webp)$/.test(file.storageKey)) {
+    return clientError(res, 404, 'File not found');
+  }
+  res.setHeader('Content-Type', file.mimeType);
+  res.setHeader('Content-Length', file.size);
+  res.setHeader('Cache-Control', 'private, no-store');
+  return res.sendFile(file.storageKey, { root: MEDIA_DIR, dotfiles: 'deny' });
+});
+
+app.delete('/api/files/:id', requireRole('ARTISAN', 'ADMIN'), validateParam('id', /^[0-9a-f-]{36}$/), (req, res) => {
+  const file = filesDb.find((item) => item.id === req.params.id);
+  if (!file || (req.auth!.role !== 'ADMIN' && file.ownerUid !== req.auth!.uid)) {
+    return clientError(res, 404, 'File not found');
+  }
+  removeStoredFile(file);
+  filesDb = filesDb.filter((item) => item.id !== file.id);
+  for (const product of productsDb) {
+    if (product.originalImageUrl === `/api/files/${file.id}`) product.originalImageUrl = '';
+    if (product.enhancedImageUrl === `/api/files/${file.id}`) product.enhancedImageUrl = '';
+  }
+  saveStoreToDisk();
+  return res.status(204).send();
+});
 
 // 2. AI Product Information Extraction & Incomplete Info Detection
-app.post('/api/ai/extract-info', async (req, res) => {
+app.post('/api/ai/extract-info', validateBody(['transcript', 'language', 'conversationHistory'], ['transcript']), validateString('transcript', 12000, true), validateLanguage('language'), validateConversationHistory, async (req, res) => {
   try {
     const { transcript, language = 'te', conversationHistory = [] } = req.body;
 
@@ -311,12 +712,12 @@ Respond ONLY with valid JSON matching this schema:
     });
   } catch (err: any) {
     console.error('Error in /api/ai/extract-info:', err);
-    res.status(500).json({ error: err.message || 'Failed to extract product information' });
+    res.status(500).json({ error: 'Failed to extract product information' });
   }
 });
 
 // 3. AI Professional Multilingual Product Description Generator
-app.post('/api/ai/generate-description', async (req, res) => {
+app.post('/api/ai/generate-description', validateBody(['productData', 'artisanLanguage', 'targetLanguage'], ['productData']), validateAIProductData, validateLanguage('artisanLanguage'), validateLanguage('targetLanguage'), async (req, res) => {
   try {
     const {
       productData,
@@ -381,12 +782,12 @@ Output valid JSON only:
     });
   } catch (err: any) {
     console.error('Error in /api/ai/generate-description:', err);
-    res.status(500).json({ error: err.message || 'Failed to generate product description' });
+    res.status(500).json({ error: 'Failed to generate product description' });
   }
 });
 
 // 4. AI Fair Craft Valuation & Pricing Recommendation
-app.post('/api/ai/pricing-recommendation', async (req, res) => {
+app.post('/api/ai/pricing-recommendation', validateBody(['productData', 'language'], ['productData']), validateAIProductData, validateLanguage('language'), async (req, res) => {
   try {
     const { productData, language = 'te' } = req.body;
     const ai = getGemini();
@@ -453,12 +854,12 @@ Return JSON only:
     });
   } catch (err: any) {
     console.error('Error in /api/ai/pricing-recommendation:', err);
-    res.status(500).json({ error: err.message || 'Failed to recommend pricing' });
+    res.status(500).json({ error: 'Failed to recommend pricing' });
   }
 });
 
 // 5. Two-Way Multilingual Translation (Customer <-> Artisan)
-app.post('/api/ai/translate', async (req, res) => {
+app.post('/api/ai/translate', validateBody(['text', 'fromLang', 'toLang'], ['text', 'fromLang', 'toLang']), validateString('text', 5000, true), validateLanguage('fromLang'), validateLanguage('toLang'), async (req, res) => {
   try {
     const { text, fromLang, toLang } = req.body;
 
@@ -515,12 +916,12 @@ Translated text (${toName}):
     });
   } catch (err: any) {
     console.error('Error in /api/ai/translate:', err);
-    res.status(500).json({ error: err.message || 'Translation failed' });
+    res.status(500).json({ error: 'Translation failed' });
   }
 });
 
 // 6. Customer Semantic Search & AI Query Understanding
-app.post('/api/ai/customer-search', async (req, res) => {
+app.post('/api/ai/customer-search', validateBody(['query', 'language'], ['query']), validateString('query', 1000, true), validateLanguage('language'), async (req, res) => {
   try {
     const { query, language = 'en' } = req.body;
     const ai = getGemini();
@@ -568,14 +969,16 @@ Output JSON only:
     });
   } catch (err: any) {
     console.error('Error in /api/ai/customer-search:', err);
-    res.status(500).json({ error: err.message || 'Search analysis failed' });
+    res.status(500).json({ error: 'Search analysis failed' });
   }
 });
 
 // 7. Customer "✨ Ask AI" Guidance for a Specific Product
-app.post('/api/ai/order-guidance', async (req, res) => {
+app.post('/api/ai/order-guidance', validateBody(['question', 'product', 'language', 'productId', 'productTitle', 'intent', 'customQuestion'], ['language']), validateString('question', 2000), validateString('customQuestion', 2000), validateLanguage('language'), validateGuidanceProduct, async (req, res) => {
   try {
-    const { question, product, language = 'en' } = req.body;
+    const { language = 'en' } = req.body;
+    const question = req.body.question || req.body.customQuestion || req.body.intent || 'How do I order?';
+    const product = req.body.product || { title: req.body.productTitle };
     const ai = getGemini();
     const langName = LANGUAGE_NAMES[language] || 'English';
 
@@ -642,7 +1045,7 @@ Output JSON only:
     });
   } catch (err: any) {
     console.error('Error in /api/ai/order-guidance:', err);
-    res.status(500).json({ error: err.message || 'Guidance failed' });
+    res.status(500).json({ error: 'Guidance failed' });
   }
 });
 
@@ -658,21 +1061,41 @@ app.get('/api/products', (req, res) => {
   res.json(visibleProductsFor(auth));
 });
 
-app.post('/api/products', requireRole('ARTISAN', 'ADMIN'), (req, res) => {
+app.post('/api/products', requireRole('ARTISAN', 'ADMIN'), validateBody([...PRODUCT_FIELDS, 'id', 'artisanId', 'artisanPhone', 'artisanName', 'artisanLanguage', 'status', 'createdAt']), validateProductInput, (req, res) => {
   const auth = req.auth!;
   const profile = usersDb.find((user) => user.uid === auth.uid);
+  const productId = `prod-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const newProduct = {
     ...req.body,
-    id: `prod-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    id: productId,
     artisanId: auth.uid,
     artisanPhone: auth.phone,
     artisanName: profile?.name || 'Artisan Maker',
     createdAt: new Date().toISOString(),
     status: 'PUBLISHED',
   };
-  productsDb.unshift(newProduct);
+  try {
+    const storedProduct = storeProductMedia(newProduct, auth.uid);
+    productsDb.unshift(storedProduct);
+    saveStoreToDisk();
+    res.status(201).json({ product: hydrateProductMedia(storedProduct, auth) });
+  } catch (err) {
+    console.error('[Media] Product upload rejected:', err instanceof Error ? err.message : err);
+    clientError(res, 400, 'Invalid product image');
+  }
+});
+
+app.delete('/api/products/:id', requireRole('ARTISAN', 'ADMIN'), validateParam('id', /^[A-Za-z0-9_-]{1,100}$/), (req, res) => {
+  const product = productsDb.find((item) => item.id === req.params.id);
+  if (!product) return clientError(res, 404, 'Product not found');
+  if (req.auth!.role !== 'ADMIN' && product.artisanId !== req.auth!.uid && !samePhone(product.artisanPhone, req.auth!.phone)) {
+    return clientError(res, 403, 'You cannot modify this product');
+  }
+  for (const file of filesDb.filter((item) => item.productId === product.id)) removeStoredFile(file);
+  filesDb = filesDb.filter((item) => item.productId !== product.id);
+  productsDb = productsDb.filter((item) => item.id !== product.id);
   saveStoreToDisk();
-  res.status(201).json({ product: newProduct });
+  return res.status(204).send();
 });
 
 // 9. Inquiries & 2-way Messages CRUD
@@ -682,7 +1105,11 @@ app.get('/api/inquiries', (req, res) => {
   res.json(visible.map((inquiry) => serializeInquiry(inquiry, auth)));
 });
 
-app.post('/api/inquiries', requireRole('CUSTOMER', 'ADMIN'), (req, res) => {
+app.post('/api/inquiries', requireRole('CUSTOMER', 'ADMIN'), validateBody([
+  'productId', 'productTitle', 'productImage', 'artisanId', 'artisanPhone', 'artisanName', 'customerId',
+  'customerName', 'customerPhone', 'customerLanguage', 'artisanLanguage', 'requestedQuantity', 'initialMessage',
+  'id', 'createdAt', 'updatedAt', 'status', 'messages',
+], ['productId']), validateString('productId', 100, true), validateString('initialMessage', 5000), validateLanguage('customerLanguage'), validateInquiryInput, async (req, res) => {
   const auth = req.auth!;
   const profile = usersDb.find((user) => user.uid === auth.uid);
   const product = visibleProductsFor(auth).find((item) => item.id === req.body.productId);
@@ -724,7 +1151,7 @@ app.post('/api/inquiries', requireRole('CUSTOMER', 'ADMIN'), (req, res) => {
   res.status(201).json({ inquiry: serializeInquiry(newInquiry, auth) });
 });
 
-app.post('/api/inquiries/:id/messages', (req, res) => {
+app.post('/api/inquiries/:id/messages', validateParam('id', /^[A-Za-z0-9_-]{1,100}$/), validateBody(['originalText', 'text', 'senderRole', 'senderName', 'inquiryId']), validateMessageInput, (req, res) => {
   const { id } = req.params;
   const inquiry = inquiriesDb.find((inq) => inq.id === id);
   const auth = req.auth!;
@@ -763,7 +1190,7 @@ app.post('/api/inquiries/:id/messages', (req, res) => {
 });
 
 // 2-Way Multilingual Reply Endpoint
-app.post('/api/inquiries/:id/reply', async (req, res) => {
+app.post('/api/inquiries/:id/reply', validateParam('id', /^[A-Za-z0-9_-]{1,100}$/), validateBody(['originalText', 'originalLang', 'senderRole', 'senderName'], ['originalText']), validateString('originalText', 5000, true), validateLanguage('originalLang'), async (req, res) => {
   try {
     const { id } = req.params;
     const { originalText, originalLang } = req.body;
@@ -825,12 +1252,12 @@ app.post('/api/inquiries/:id/reply', async (req, res) => {
     return res.status(200).json(serializeInquiry(inquiry, auth));
   } catch (err: any) {
     console.error('Error in /api/inquiries/:id/reply:', err);
-    res.status(500).json({ error: err.message || 'Failed to send reply' });
+    res.status(500).json({ error: 'Failed to send reply' });
   }
 });
 
 // 10. User Profiles (Auth/Onboarding Persistence)
-app.get('/api/users/:phone', (req, res) => {
+app.get('/api/users/:phone', validateParam('phone', /^\+?[0-9 ()-]{7,20}$/), (req, res) => {
   const { phone } = req.params;
   if (!req.auth || (req.auth.role !== 'ADMIN' && !samePhone(phone, req.auth.phone))) {
     return res.status(403).json({ error: 'You cannot access this profile' });
@@ -842,10 +1269,11 @@ app.get('/api/users/:phone', (req, res) => {
   res.json({ user: safeUser });
 });
 
-app.post('/api/users', (req, res) => {
+app.post('/api/users', validateBody(['name', 'language', 'onboardingComplete', 'craftSpecialty', 'location', 'shoppingInterests', 'phone', 'role']), validateString('name', 200), validateString('craftSpecialty', 500), validateString('location', 300), validateString('shoppingInterests', 500), validateLanguage('language'), (req, res) => {
   const { name, language, onboardingComplete, craftSpecialty, location, shoppingInterests } = req.body;
   const auth = req.auth!;
   const phone = auth.phone;
+  if (onboardingComplete !== undefined && typeof onboardingComplete !== 'boolean') return clientError(res, 400, 'Invalid onboarding state');
 
   let user = usersDb.find((u) => u.uid === auth.uid || samePhone(u.phone, phone));
   if (user) {
@@ -881,7 +1309,7 @@ app.post('/api/users', (req, res) => {
 });
 
 // Role changes are an administrative operation; clients cannot assign themselves a role.
-app.post('/api/admin/users/:uid/role', requireRole('ADMIN'), async (req, res) => {
+app.post('/api/admin/users/:uid/role', requireRole('ADMIN'), validateParam('uid', /^[A-Za-z0-9_-]{1,128}$/), validateBody(['role'], ['role']), async (req, res) => {
   const { uid } = req.params;
   const role = req.body?.role;
   if (role !== 'ARTISAN' && role !== 'CUSTOMER') {
@@ -902,6 +1330,11 @@ app.post('/api/admin/users/:uid/role', requireRole('ADMIN'), async (req, res) =>
   }
 });
 
+app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error('[API] Unhandled request error:', err);
+  return clientError(res, 500, 'Internal server error');
+});
+
 // Seed Initial Data if store is empty
 const loaded = loadStoreFromDisk();
 if (!loaded || productsDb.length === 0) {
@@ -909,6 +1342,7 @@ if (!loaded || productsDb.length === 0) {
   inquiriesDb = [...INITIAL_INQUIRIES];
   saveStoreToDisk();
 }
+reconcileStoredFiles();
 
 // -------------------------------------------------------------
 // Vite Middleware / Static Serving
