@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
@@ -12,6 +12,7 @@ import { Badge } from '../../components/ui/Badge';
 import { Button } from '../../components/ui/Button';
 import { TextField } from '../../components/ui/TextField';
 import { ErrorState } from '../../components/ui/ErrorState';
+import { SpeechAdapter } from '../../adapters/speech';
 
 /** Compact native progress pills: done (amber fill) → current (outline) → upcoming (muted). */
 const StepProgress: React.FC<{ currentIndex: number }> = ({ currentIndex }) => {
@@ -145,6 +146,7 @@ export const UploadScreen: React.FC = () => {
   const [voiceNote, setVoiceNote] = useState('');
   const [extractionResult, setExtractionResult] = useState<any | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isSpeakingDescription, setIsSpeakingDescription] = useState(false);
 
   const handleCamera = async () => {
     const result = await ImageAdapter.captureFromCamera();
@@ -170,6 +172,19 @@ export const UploadScreen: React.FC = () => {
     } finally {
       setIsProcessing(false);
     }
+  };
+
+  const handleSpeakDescription = async () => {
+    if (!voiceNote.trim()) return;
+    setIsSpeakingDescription(true);
+    await SpeechAdapter.speak(voiceNote, lang as any, () => setIsSpeakingDescription(false));
+  };
+
+  const handleVoiceInput = () => {
+    Alert.alert(
+      t('yourDescription'),
+      'Voice transcription is not available in this native build. Please type the description, or use the web app for browser speech recognition.'
+    );
   };
 
   const hasPhoto = Boolean(selectedImage?.uri);
@@ -236,6 +251,27 @@ export const UploadScreen: React.FC = () => {
             helper={t('descHelper')}
             accessibilityLabel={t('yourDescription')}
           />
+          <View style={styles.voiceActions}>
+            <Pressable
+              onPress={handleVoiceInput}
+              style={styles.voiceAction}
+              accessibilityRole="button"
+              accessibilityLabel="Use voice input"
+            >
+              <Ionicons name="mic-outline" size={20} color={PALETTE.primaryLight} />
+              <Text style={styles.voiceActionText}>Voice input</Text>
+            </Pressable>
+            <Pressable
+              onPress={handleSpeakDescription}
+              disabled={!voiceNote.trim() || isSpeakingDescription}
+              style={[styles.voiceAction, (!voiceNote.trim() || isSpeakingDescription) && styles.voiceActionDisabled]}
+              accessibilityRole="button"
+              accessibilityLabel="Listen to description"
+            >
+              <Ionicons name={isSpeakingDescription ? 'volume-high' : 'volume-medium-outline'} size={20} color={PALETTE.primaryLight} />
+              <Text style={styles.voiceActionText}>Listen</Text>
+            </Pressable>
+          </View>
         </Card>
 
         {/* STEP 3 — AI DRAFT */}
@@ -359,6 +395,30 @@ const styles = StyleSheet.create({
     padding: SPACING.lg,
     gap: SPACING.sm,
     marginBottom: SPACING.lg,
+  },
+  voiceActions: {
+    flexDirection: 'row',
+    gap: SPACING.sm,
+    marginTop: SPACING.xs,
+  },
+  voiceAction: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACING.xs,
+    paddingVertical: SPACING.sm,
+    paddingHorizontal: SPACING.md,
+    borderRadius: RADIUS.md,
+    borderWidth: 1,
+    borderColor: PALETTE.surfaceBorder,
+    backgroundColor: PALETTE.surfaceHighlight,
+  },
+  voiceActionDisabled: {
+    opacity: 0.45,
+  },
+  voiceActionText: {
+    color: PALETTE.primaryLight,
+    fontSize: 13,
+    fontWeight: '600',
   },
   photoPreview: {
     width: '100%',

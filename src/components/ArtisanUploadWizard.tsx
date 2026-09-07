@@ -69,6 +69,7 @@ export const ArtisanUploadWizard: React.FC<ArtisanUploadWizardProps> = ({
 }) => {
   const t = useTranslation(currentLang);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const recognitionRef = useRef<any>(null);
 
   // Flow State
   const [step, setStep] = useState<ArtisanStep>('PHOTO_CAPTURE');
@@ -83,6 +84,7 @@ export const ArtisanUploadWizard: React.FC<ArtisanUploadWizardProps> = ({
   // Step 3: Voice / Text info & Missing info detection
   const [voiceTranscript, setVoiceTranscript] = useState('');
   const [isListening, setIsListening] = useState(false);
+  const [speechError, setSpeechError] = useState('');
   const [isAnalyzingInfo, setIsAnalyzingInfo] = useState(false);
   const [incompleteCheck, setIncompleteCheck] = useState<IncompleteInfoCheck | null>(null);
   const [conversationHistory, setConversationHistory] = useState<Array<{ role: string; content: string }>>([]);
@@ -155,6 +157,8 @@ export const ArtisanUploadWizard: React.FC<ArtisanUploadWizardProps> = ({
   // Handler for Voice Recording
   const toggleSpeechRecognition = () => {
     if (isListening) {
+      recognitionRef.current?.stop();
+      recognitionRef.current = null;
       setIsListening(false);
       return;
     }
@@ -163,11 +167,12 @@ export const ArtisanUploadWizard: React.FC<ArtisanUploadWizardProps> = ({
       (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
 
     if (!SpeechRecognition) {
-      alert('Speech Recognition is not supported by your browser. Please type the details in the text box below.');
+      setSpeechError('Voice transcription is not supported on this device. Please type the description below.');
       return;
     }
 
     try {
+      setSpeechError('');
       const recognition = new SpeechRecognition();
       const langMap: Record<string, string> = {
         te: 'te-IN',
@@ -175,10 +180,20 @@ export const ArtisanUploadWizard: React.FC<ArtisanUploadWizardProps> = ({
         en: 'en-IN',
         ta: 'ta-IN',
         kn: 'kn-IN',
+        mr: 'mr-IN',
+        bn: 'bn-IN',
+        ml: 'ml-IN',
+        gu: 'gu-IN',
+        pa: 'pa-IN',
+        or: 'or-IN',
+        as: 'as-IN',
+        ur: 'ur-IN',
       };
       recognition.lang = langMap[currentLang] || 'te-IN';
       recognition.continuous = true;
-      recognition.interimResults = true;
+      // Commit only final browser recognition results so interim updates cannot duplicate text.
+      recognition.interimResults = false;
+      recognitionRef.current = recognition;
 
       setIsListening(true);
 
@@ -192,19 +207,32 @@ export const ArtisanUploadWizard: React.FC<ArtisanUploadWizardProps> = ({
 
       recognition.onerror = (event: any) => {
         console.warn('Recognition error:', event.error);
+        setSpeechError(
+          event.error === 'not-allowed'
+            ? 'Microphone permission was denied. Please allow microphone access or type the description.'
+            : 'Voice transcription failed. Please try again or type the description.'
+        );
         setIsListening(false);
+        recognitionRef.current = null;
       };
 
       recognition.onend = () => {
         setIsListening(false);
+        recognitionRef.current = null;
       };
 
       recognition.start();
     } catch (err) {
       console.warn('Failed to start speech recognition:', err);
+      setSpeechError('Voice transcription could not start. Please type the description instead.');
       setIsListening(false);
+      recognitionRef.current = null;
     }
   };
+
+  useEffect(() => () => {
+    recognitionRef.current?.stop();
+  }, []);
 
   // Analyze Product Information with Gemini
   const handleAnalyzeProductInfo = async () => {
@@ -723,6 +751,9 @@ export const ArtisanUploadWizard: React.FC<ArtisanUploadWizardProps> = ({
                 {currentLang === 'te' ? 'దయచేసి స్పష్టంగా మాట్లాడండి' : 'Please speak clearly'}
               </p>
             </div>
+            {speechError && (
+              <p className="mt-2 text-xs text-red-300" role="alert">{speechError}</p>
+            )}
           </div>
 
           {/* Transcript / Text Input */}
@@ -738,6 +769,9 @@ export const ArtisanUploadWizard: React.FC<ArtisanUploadWizardProps> = ({
               placeholder={currentLang === 'te' ? 'ఉదాహరణ: ఇది చేతితో చేసిన కొండపల్లి చెక్క బొమ్మ. పొనికి చెక్కతో తయారు చేశాను...' : 'e.g. Handcrafted wooden craft made with natural wood...'}
               className="w-full p-3.5 bg-[#221813] border border-[#382b22] rounded-2xl text-stone-100 text-sm focus:outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-500/30 placeholder:text-stone-500"
             />
+            <p className="mt-2 text-xs text-stone-500" aria-live="polite">
+              {isListening ? 'Listening in the selected language...' : speechError || 'You can edit the transcription before continuing.'}
+            </p>
           </div>
 
           {/* CRITICAL: INCOMPLETE INFORMATION ALERT & FOLLOW-UP QUESTIONS */}
