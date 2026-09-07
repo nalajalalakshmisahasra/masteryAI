@@ -17,6 +17,7 @@ import { CraftProduct, SupportedLanguage } from '../types';
 import { useTranslation } from '../i18n/translations';
 import { speakText } from '../utils/speech';
 import { getLocalizedProduct } from '../utils/productLocalization';
+import { apiFetch } from '../utils/api';
 
 interface CustomerMarketplaceProps {
   currentLang: SupportedLanguage;
@@ -68,7 +69,7 @@ export const CustomerMarketplace: React.FC<CustomerMarketplaceProps> = ({
 
     setIsSearching(true);
     try {
-      const res = await fetch('/api/ai/customer-search', {
+      const res = await apiFetch('/api/ai/customer-search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

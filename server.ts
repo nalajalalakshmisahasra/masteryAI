@@ -5,6 +5,7 @@ import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
 import { createServer as createViteServer } from 'vite';
 import { INITIAL_PRODUCTS, INITIAL_INQUIRIES } from './src/data/mockData.ts';
+import { provisionRole, requireAuth, requireRole, samePhone } from './serverAuth.ts';
 
 dotenv.config();
 
@@ -146,6 +147,9 @@ app.get('/api/services/status', (req, res) => {
     },
   });
 });
+
+// All application data, AI, profile, and mutation routes require a verified identity.
+app.use('/api', requireAuth);
 
 // 2. AI Product Information Extraction & Incomplete Info Detection
 app.post('/api/ai/extract-info', async (req, res) => {
@@ -605,14 +609,33 @@ Output JSON only:
 });
 
 // 8. Products CRUD
+function serializeInquiry(inquiry: any, auth: NonNullable<Express.Request['auth']>) {
+  if (auth.role === 'ADMIN') return inquiry;
+  const { customerId, artisanId, ...safeInquiry } = inquiry;
+  return safeInquiry;
+}
+
 app.get('/api/products', (req, res) => {
-  res.json(productsDb);
+  const auth = req.auth!;
+  const ownedProducts = productsDb.filter(
+    (product) => product.artisanId === auth.uid || samePhone(product.artisanPhone, auth.phone)
+  );
+  if (auth.role === 'ADMIN') return res.json(productsDb);
+  if (auth.role === 'ARTISAN') return res.json(ownedProducts);
+
+  // Customers receive marketplace fields only; ownership and contact fields stay server-side.
+  res.json(productsDb.map(({ artisanId, artisanPhone, ...product }) => product));
 });
 
-app.post('/api/products', (req, res) => {
+app.post('/api/products', requireRole('ARTISAN', 'ADMIN'), (req, res) => {
+  const auth = req.auth!;
+  const profile = usersDb.find((user) => user.uid === auth.uid);
   const newProduct = {
     ...req.body,
-    id: req.body.id || `prod-${Date.now()}`,
+    id: `prod-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    artisanId: auth.uid,
+    artisanPhone: auth.phone,
+    artisanName: profile?.name || 'Artisan Maker',
     createdAt: new Date().toISOString(),
     status: 'PUBLISHED',
   };
@@ -623,56 +646,125 @@ app.post('/api/products', (req, res) => {
 
 // 9. Inquiries & 2-way Messages CRUD
 app.get('/api/inquiries', (req, res) => {
-  res.json(inquiriesDb);
+  const auth = req.auth!;
+  if (auth.role === 'ADMIN') return res.json(inquiriesDb);
+  const ownedProductIds = new Set(
+    productsDb
+      .filter((product) => product.artisanId === auth.uid || samePhone(product.artisanPhone, auth.phone))
+      .map((product) => product.id)
+  );
+  const visible = inquiriesDb.filter((inquiry) =>
+    auth.role === 'CUSTOMER'
+      ? inquiry.customerId === auth.uid || samePhone(inquiry.customerPhone, auth.phone)
+      : ownedProductIds.has(inquiry.productId) ||
+        inquiry.artisanId === auth.uid ||
+        samePhone(inquiry.artisanPhone, auth.phone)
+  );
+  res.json(visible.map((inquiry) => serializeInquiry(inquiry, auth)));
 });
 
-app.post('/api/inquiries', (req, res) => {
+app.post('/api/inquiries', requireRole('CUSTOMER', 'ADMIN'), (req, res) => {
+  const auth = req.auth!;
+  const profile = usersDb.find((user) => user.uid === auth.uid);
+  const product = productsDb.find((item) => item.id === req.body.productId);
+  if (!product) return res.status(404).json({ error: 'Product not found' });
+  const initialMessage = typeof req.body.initialMessage === 'string' ? req.body.initialMessage.trim().slice(0, 5000) : '';
   const newInquiry = {
-    ...req.body,
-    id: req.body.id || `inq-${Date.now()}`,
+    productId: product.id,
+    productTitle: product.title,
+    productImage: product.enhancedImageUrl || product.originalImageUrl,
+    artisanId: product.artisanId,
+    artisanPhone: product.artisanPhone,
+    artisanName: product.artisanName,
+    customerId: auth.uid,
+    customerName: profile?.name || 'Customer',
+    customerPhone: auth.phone,
+    customerLanguage: req.body.customerLanguage || 'en',
+    artisanLanguage: product.artisanLanguage || 'te',
+    requestedQuantity: req.body.requestedQuantity,
+    initialMessage: req.body.initialMessage,
+    id: `inq-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     status: 'PENDING',
-    messages: req.body.messages || [],
+    messages: initialMessage
+      ? [{
+          id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          inquiryId: product.id,
+          senderRole: 'CUSTOMER',
+          senderName: profile?.name || 'Customer',
+          originalText: initialMessage,
+          originalLang: req.body.customerLanguage || 'en',
+          timestamp: new Date().toISOString(),
+        }]
+      : [],
   };
+  newInquiry.messages[0] && (newInquiry.messages[0].inquiryId = newInquiry.id);
   inquiriesDb.unshift(newInquiry);
   saveStoreToDisk();
-  res.status(201).json({ inquiry: newInquiry });
+  res.status(201).json({ inquiry: serializeInquiry(newInquiry, auth) });
 });
 
 app.post('/api/inquiries/:id/messages', (req, res) => {
   const { id } = req.params;
   const inquiry = inquiriesDb.find((inq) => inq.id === id);
+  const auth = req.auth!;
 
   if (!inquiry) {
     return res.status(404).json({ error: 'Inquiry not found' });
   }
+  const isParticipant =
+    inquiry.customerId === auth.uid ||
+    inquiry.artisanId === auth.uid ||
+    samePhone(inquiry.customerPhone, auth.phone) ||
+    samePhone(inquiry.artisanPhone, auth.phone);
+  if (auth.role !== 'ADMIN' && !isParticipant) {
+    return res.status(403).json({ error: 'You cannot access this inquiry' });
+  }
 
   const message = {
-    ...req.body,
     id: `msg-${Date.now()}`,
     inquiryId: id,
+    senderRole: auth.role === 'ADMIN'
+      ? 'ADMIN'
+      : (inquiry.artisanId === auth.uid || samePhone(inquiry.artisanPhone, auth.phone) ? 'ARTISAN' : 'CUSTOMER'),
+    senderName: auth.role === 'ADMIN'
+      ? 'Administrator'
+      : (inquiry.artisanId === auth.uid || samePhone(inquiry.artisanPhone, auth.phone) ? inquiry.artisanName : inquiry.customerName),
+    originalText: String(req.body.originalText || req.body.text || '').slice(0, 5000),
     timestamp: new Date().toISOString(),
   };
+  if (!message.originalText) return res.status(400).json({ error: 'Message text is required' });
 
   if (!inquiry.messages) inquiry.messages = [];
   inquiry.messages.push(message);
   inquiry.updatedAt = new Date().toISOString();
   saveStoreToDisk();
-  res.status(201).json({ message, inquiry });
+  res.status(201).json({ message, inquiry: serializeInquiry(inquiry, auth) });
 });
 
 // 2-Way Multilingual Reply Endpoint
 app.post('/api/inquiries/:id/reply', async (req, res) => {
   try {
     const { id } = req.params;
-    const { senderRole, senderName, originalText, originalLang } = req.body;
+    const { originalText, originalLang } = req.body;
+    const auth = req.auth!;
     const inquiry = inquiriesDb.find((inq) => inq.id === id);
 
     if (!inquiry) {
       return res.status(404).json({ error: 'Inquiry not found' });
     }
+    const isAdmin = auth.role === 'ADMIN';
+    const isArtisan = inquiry.artisanId === auth.uid || samePhone(inquiry.artisanPhone, auth.phone);
+    const isCustomer = inquiry.customerId === auth.uid || samePhone(inquiry.customerPhone, auth.phone);
+    if (auth.role !== 'ADMIN' && !isArtisan && !isCustomer) {
+      return res.status(403).json({ error: 'You cannot access this inquiry' });
+    }
+    if (typeof originalText !== 'string' || !originalText.trim()) {
+      return res.status(400).json({ error: 'Reply text is required' });
+    }
 
+    const senderRole = isAdmin ? 'ADMIN' : isArtisan ? 'ARTISAN' : 'CUSTOMER';
     const targetLang = senderRole === 'ARTISAN' ? (inquiry.customerLanguage || 'en') : (inquiry.artisanLanguage || 'te');
     let translatedText = originalText;
 
@@ -696,8 +788,8 @@ app.post('/api/inquiries/:id/reply', async (req, res) => {
     const newMessage = {
       id: `msg-${Date.now()}`,
       inquiryId: id,
-      senderRole: senderRole || 'ARTISAN',
-      senderName: senderName || (senderRole === 'ARTISAN' ? inquiry.artisanName : inquiry.customerName),
+      senderRole,
+      senderName: senderRole === 'ARTISAN' ? inquiry.artisanName : senderRole === 'CUSTOMER' ? inquiry.customerName : 'Administrator',
       originalText,
       originalLang: originalLang || 'te',
       translatedText,
@@ -711,7 +803,7 @@ app.post('/api/inquiries/:id/reply', async (req, res) => {
     inquiry.status = 'IN_PROGRESS';
 
     saveStoreToDisk();
-    return res.status(200).json(inquiry);
+    return res.status(200).json(serializeInquiry(inquiry, auth));
   } catch (err: any) {
     console.error('Error in /api/inquiries/:id/reply:', err);
     res.status(500).json({ error: err.message || 'Failed to send reply' });
@@ -721,20 +813,27 @@ app.post('/api/inquiries/:id/reply', async (req, res) => {
 // 10. User Profiles (Auth/Onboarding Persistence)
 app.get('/api/users/:phone', (req, res) => {
   const { phone } = req.params;
-  const user = usersDb.find((u) => u.phone === phone);
+  if (!req.auth || (req.auth.role !== 'ADMIN' && !samePhone(phone, req.auth.phone))) {
+    return res.status(403).json({ error: 'You cannot access this profile' });
+  }
+  const user = usersDb.find((u) => samePhone(u.phone, phone));
   if (!user) return res.status(404).json({ error: 'User not found' });
-  res.json({ user });
+  if (req.auth.role === 'ADMIN') return res.json({ user });
+  const { uid, ...safeUser } = user;
+  res.json({ user: safeUser });
 });
 
 app.post('/api/users', (req, res) => {
-  const { phone, name, role, language, onboardingComplete, craftSpecialty, location, shoppingInterests } = req.body;
-  if (!phone) return res.status(400).json({ error: 'Phone number is required' });
+  const { name, language, onboardingComplete, craftSpecialty, location, shoppingInterests } = req.body;
+  const auth = req.auth!;
+  const phone = auth.phone;
 
-  let user = usersDb.find((u) => u.phone === phone);
+  let user = usersDb.find((u) => u.uid === auth.uid || samePhone(u.phone, phone));
   if (user) {
     Object.assign(user, {
+      uid: auth.uid,
       name: name !== undefined ? name : user.name,
-      role: role !== undefined ? role : user.role,
+      role: auth.role,
       language: language !== undefined ? language : user.language,
       onboardingComplete: onboardingComplete !== undefined ? onboardingComplete : user.onboardingComplete,
       craftSpecialty: craftSpecialty !== undefined ? craftSpecialty : user.craftSpecialty,
@@ -744,9 +843,10 @@ app.post('/api/users', (req, res) => {
     });
   } else {
     user = {
+      uid: auth.uid,
       phone,
-      name: name || (role === 'ARTISAN' ? 'Artisan Maker' : 'Customer Buyer'),
-      role: role || 'ARTISAN',
+      name: name || (auth.role === 'ARTISAN' ? 'Artisan Maker' : 'Customer Buyer'),
+      role: auth.role,
       language: language || 'en',
       onboardingComplete: Boolean(onboardingComplete),
       craftSpecialty: craftSpecialty || '',
@@ -759,6 +859,28 @@ app.post('/api/users', (req, res) => {
   }
   saveStoreToDisk();
   res.status(200).json({ user });
+});
+
+// Role changes are an administrative operation; clients cannot assign themselves a role.
+app.post('/api/admin/users/:uid/role', requireRole('ADMIN'), async (req, res) => {
+  const { uid } = req.params;
+  const role = req.body?.role;
+  if (role !== 'ARTISAN' && role !== 'CUSTOMER') {
+    return res.status(400).json({ error: 'Only ARTISAN or CUSTOMER roles may be provisioned' });
+  }
+  try {
+    await provisionRole(uid, role);
+    const user = usersDb.find((item) => item.uid === uid);
+    if (user) {
+      user.role = role;
+      user.updatedAt = new Date().toISOString();
+      saveStoreToDisk();
+    }
+    return res.json({ uid, role });
+  } catch (err) {
+    console.error('[Auth] Role provisioning failed:', err instanceof Error ? err.message : err);
+    return res.status(500).json({ error: 'Role provisioning failed' });
+  }
 });
 
 // Seed Initial Data if store is empty

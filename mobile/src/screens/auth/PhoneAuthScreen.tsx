@@ -3,7 +3,7 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { PALETTE, SPACING, TOUCH_TARGET, TYPOGRAPHY } from '../../theme/tokens';
-import { AuthAdapter, AuthUser, DEV_TEST_ACCOUNTS } from '../../adapters/auth';
+import { AuthAdapter, AuthUser, DEV_AUTH_ENABLED, DEV_TEST_ACCOUNTS } from '../../adapters/auth';
 import { AuthStackParamList } from './WelcomeLanguageScreen';
 import { useLanguage } from '../../i18n/LanguageContext';
 import { Button } from '../../components/ui/Button';
@@ -21,7 +21,7 @@ export const PhoneAuthScreen: React.FC<Props> = ({ navigation, onAuthenticated }
   const [phone, setPhone] = useState('');
   const [role, setRole] = useState<'ARTISAN' | 'CUSTOMER'>('ARTISAN');
   const [name, setName] = useState('');
-  const [otp, setOtp] = useState('123456');
+  const [otp, setOtp] = useState(DEV_AUTH_ENABLED ? '123456' : '');
   const [isVerifying, setIsVerifying] = useState(false);
   const [statusMessage, setStatusMessage] = useState('');
   const [statusError, setStatusError] = useState(false);
@@ -128,8 +128,8 @@ export const PhoneAuthScreen: React.FC<Props> = ({ navigation, onAuthenticated }
           />
         </Card>
 
-        {/* Development test accounts — collapsed by default */}
-        <View style={styles.devSection}>
+        {/* Development test accounts — available only in explicitly enabled dev builds */}
+        {DEV_AUTH_ENABLED ? <View style={styles.devSection}>
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Development test accounts"
@@ -159,7 +159,7 @@ export const PhoneAuthScreen: React.FC<Props> = ({ navigation, onAuthenticated }
               />
             </View>
           ) : null}
-        </View>
+        </View> : null}
 
         {/* Bottom CTA section — visually separated from the form */}
         <View style={styles.footer}>

@@ -23,6 +23,7 @@ import { CraftProduct, SupportedLanguage, ArtisanStep, IncompleteInfoCheck } fro
 import { useTranslation } from '../i18n/translations';
 import { speakText } from '../utils/speech';
 import { enhanceCraftImage, EnhancementStats } from '../utils/imageEnhance';
+import { apiFetch } from '../utils/api';
 
 interface ArtisanUploadWizardProps {
   currentLang: SupportedLanguage;
@@ -215,7 +216,7 @@ export const ArtisanUploadWizard: React.FC<ArtisanUploadWizardProps> = ({
         ? `${voiceTranscript}. Additional clarification: ${followUpAnswer}`
         : voiceTranscript;
 
-      const res = await fetch('/api/ai/extract-info', {
+      const res = await apiFetch('/api/ai/extract-info', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -269,7 +270,7 @@ export const ArtisanUploadWizard: React.FC<ArtisanUploadWizardProps> = ({
 
     try {
       // 1. Generate Description in target language (e.g. English or Hindi)
-      const descRes = await fetch('/api/ai/generate-description', {
+      const descRes = await apiFetch('/api/ai/generate-description', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -284,7 +285,7 @@ export const ArtisanUploadWizard: React.FC<ArtisanUploadWizardProps> = ({
       setGeneratedFullDesc(descData.fullDescription);
 
       // 2. Pricing Recommendation
-      const priceRes = await fetch('/api/ai/pricing-recommendation', {
+      const priceRes = await apiFetch('/api/ai/pricing-recommendation', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -343,7 +344,7 @@ export const ArtisanUploadWizard: React.FC<ArtisanUploadWizardProps> = ({
     };
 
     try {
-      await fetch('/api/products', {
+      await apiFetch('/api/products', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(newProduct),

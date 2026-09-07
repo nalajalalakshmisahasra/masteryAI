@@ -1,4 +1,6 @@
 import { NativeModules, Platform } from 'react-native';
+import { StorageAdapter } from './storage';
+import { getAuth, getIdToken } from '@react-native-firebase/auth';
 
 /**
  * Mobile Native API Adapter
@@ -94,6 +96,10 @@ async function request<T>(endpoint: string, options: RequestOptions = {}): Promi
     Accept: 'application/json',
     ...(options.headers as Record<string, string>),
   };
+  const session = await StorageAdapter.getAuthSession();
+  const firebaseUser = getAuth().currentUser;
+  const token = firebaseUser ? await getIdToken(firebaseUser) : session?.token;
+  if (token) headers.Authorization = `Bearer ${token}`;
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);

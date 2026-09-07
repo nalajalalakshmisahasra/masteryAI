@@ -1,5 +1,12 @@
 import { StorageAdapter, StoredAuthSession } from './storage';
 import { ApiAdapter } from './api';
+import {
+  getAuth,
+  getIdToken,
+  getIdTokenResult,
+  signInWithPhoneNumber,
+  signOut as firebaseSignOut,
+} from '@react-native-firebase/auth';
 
 /**
  * Mobile Authentication Adapter Architecture
@@ -92,6 +99,7 @@ class DevAuthProvider implements IAuthProvider {
       name: user.name,
       role: user.role,
       completedOnboarding: user.completedOnboarding,
+      token: `dev:${user.phone}`,
     });
 
     // Sync with backend /api/users. Best-effort ONLY: never await it, so a
@@ -132,23 +140,80 @@ class DevAuthProvider implements IAuthProvider {
  * When native Firebase dependencies are installed via prebuild/native modules,
  * this provider implements IAuthProvider using native Firebase credentials.
  */
-class NativeFirebasePlaceholderProvider implements IAuthProvider {
-  async sendOtp(_phone: string): Promise<VerificationSession> {
-    throw new Error('Native Firebase phone auth requires native build / @react-native-firebase/auth setup.');
+class NativeFirebaseProvider implements IAuthProvider {
+  private readonly confirmations = new Map<string, { confirm(otp: string): Promise<any> }>();
+
+  async sendOtp(phone: string): Promise<VerificationSession> {
+    const cleanPhone = phone.replace(/\D/g, '').slice(-10);
+    const confirmation = await signInWithPhoneNumber(getAuth(), `+91${cleanPhone}`);
+    const verificationId = confirmation.verificationId;
+    this.confirmations.set(verificationId, confirmation);
+    return { verificationId, phoneNumber: cleanPhone, isDevelopmentMock: false };
   }
 
-  async verifyOtp(_verificationId: string, _otp: string): Promise<AuthUser> {
-    throw new Error('Native Firebase phone auth requires native build / @react-native-firebase/auth setup.');
+  async verifyOtp(
+    verificationId: string,
+    otp: string,
+    _phone: string,
+    name?: string,
+  ): Promise<AuthUser> {
+    const confirmation = this.confirmations.get(verificationId);
+    if (!confirmation) throw new Error('OTP session not found. Please request a new code.');
+    const result = await confirmation.confirm(otp);
+    this.confirmations.delete(verificationId);
+    const firebaseUser = result.user;
+    const tokenResult = await getIdTokenResult(firebaseUser, true);
+    const role = tokenResult.claims.role === 'ARTISAN' || tokenResult.claims.role === 'ADMIN'
+      ? tokenResult.claims.role
+      : 'CUSTOMER';
+    const phone = (firebaseUser.phoneNumber || '').replace(/\D/g, '').slice(-10);
+    const token = await getIdToken(firebaseUser);
+    const existing = await StorageAdapter.getAuthSession();
+    const user: AuthUser = {
+      uid: firebaseUser.uid,
+      phone,
+      name: firebaseUser.displayName || name || existing?.name || 'Customer Buyer',
+      role,
+      completedOnboarding: existing?.completedOnboarding || false,
+      token,
+    };
+    await StorageAdapter.setAuthSession(user);
+    await ApiAdapter.saveUser({ name: user.name, onboardingComplete: user.completedOnboarding });
+    return user;
   }
 
   async signOut(): Promise<void> {
+    await firebaseSignOut(getAuth());
     await StorageAdapter.clearAuthSession();
   }
 
   async getCurrentUser(): Promise<AuthUser | null> {
-    return null;
+    const firebaseUser = getAuth().currentUser;
+    if (!firebaseUser) {
+      await StorageAdapter.clearAuthSession();
+      return null;
+    }
+    const tokenResult = await getIdTokenResult(firebaseUser);
+    const role = tokenResult.claims.role === 'ARTISAN' || tokenResult.claims.role === 'ADMIN'
+      ? tokenResult.claims.role
+      : 'CUSTOMER';
+    const token = await getIdToken(firebaseUser);
+    const session = await StorageAdapter.getAuthSession();
+    return {
+      uid: firebaseUser.uid,
+      phone: (firebaseUser.phoneNumber || '').replace(/\D/g, '').slice(-10),
+      name: firebaseUser.displayName || session?.name || 'Customer Buyer',
+      role,
+      completedOnboarding: session?.completedOnboarding || false,
+      token,
+    };
   }
 }
 
-// Active provider instance (can be swapped in config when native Firebase is wired)
-export const AuthAdapter: IAuthProvider = new DevAuthProvider();
+export const DEV_AUTH_ENABLED =
+  typeof __DEV__ !== 'undefined' && __DEV__ && process.env.EXPO_PUBLIC_DEV_AUTH_ENABLED === 'true';
+
+// Demo auth is available only in development with an explicit environment flag.
+export const AuthAdapter: IAuthProvider = DEV_AUTH_ENABLED
+  ? new DevAuthProvider()
+  : new NativeFirebaseProvider();

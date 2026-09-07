@@ -31,8 +31,13 @@ export const OnboardingScreen: React.FC<Props> = ({ route, onAuthenticated }) =>
 
   const handleFinish = async () => {
     setIsSaving(true);
+    const session = await StorageAdapter.getAuthSession();
+    if (!session?.token) {
+      setIsSaving(false);
+      return;
+    }
     try {
-      // Local session must always be saved before entering the platform.
+      // Preserve the verified identity and token while updating local onboarding state.
       await StorageAdapter.setOnboarded(phone);
       await StorageAdapter.setSpeechEnabled(voiceGuidance);
       await StorageAdapter.setAuthSession({
@@ -40,6 +45,7 @@ export const OnboardingScreen: React.FC<Props> = ({ route, onAuthenticated }) =>
         name,
         role,
         completedOnboarding: true,
+        token: session.token,
       });
     } catch (err) {
       console.warn('Onboarding local save error:', err);
@@ -61,11 +67,12 @@ export const OnboardingScreen: React.FC<Props> = ({ route, onAuthenticated }) =>
 
     // Hand the completed session to RootNavigator so it swaps to the role tabs.
     onAuthenticated?.({
-      uid: `dev-uid-${phone}`,
+      uid: session.token.startsWith('dev:') ? `dev-uid-${phone}` : session.token,
       phone,
       name,
       role,
       completedOnboarding: true,
+      token: session.token,
     });
     setIsSaving(false);
   };

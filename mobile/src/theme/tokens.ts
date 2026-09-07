@@ -7,28 +7,28 @@ import { Platform, StyleSheet, TextStyle, ViewStyle } from 'react-native';
  */
 
 export const PALETTE = {
-  // Brand / Artisanal Ochre & Terracotta
-  primary: '#D97706',       // Amber 600 (Terracotta accent)
-  primaryDark: '#B45309',   // Amber 700
-  primaryLight: '#FBBF24',  // Amber 400
-  primaryMuted: 'rgba(217, 119, 6, 0.15)',
-  primaryPressed: '#B45309', // Amber 700 (pressed/active state of primary actions)
+  // Warm ivory, terracotta and muted amber create a grounded craft palette.
+  primary: '#B85C38',
+  primaryDark: '#8F4329',
+  primaryLight: '#C58A3A',
+  primaryMuted: 'rgba(184, 92, 56, 0.12)',
+  primaryPressed: '#8F4329',
 
-  // Deep Earth Surface Architecture
-  background: '#16120F',     // Root container background
-  surface: '#221A15',        // Primary card/cell surface
-  surfaceElevated: '#2B211B',// Modals, sheets, elevated cards
-  surfaceHighlight: '#382B22',
-  surfaceBorder: '#382B22',  // Subtle cell borders
-  borderActive: '#D97706',   // Focused/selected borders
-  inputBg: '#1D1712',        // Slightly recessed background for text inputs
+  // Light surface architecture keeps content and craft imagery prominent.
+  background: '#FAF7F0',
+  surface: '#FFFFFF',
+  surfaceElevated: '#FFFDF8',
+  surfaceHighlight: '#F5EDE3',
+  surfaceBorder: '#E8DED2',
+  borderActive: '#B85C38',
+  inputBg: '#FFFDF8',
   scrim: 'rgba(0, 0, 0, 0.6)', // Backdrop overlay for sheets/modals
 
-  // Typographic Tones (Warm Ivory to Stone)
-  textPrimary: '#FDF6E2',    // High contrast warm ivory
-  textSecondary: '#D6D3D1',  // Legible subheadings (Stone 300)
-  textMuted: '#A8A29E',      // Metadata/captions (Stone 400)
-  textInverse: '#16120F',    // Text on primary buttons
+  // Typographic tones maintain warm, readable contrast on light surfaces.
+  textPrimary: '#3B2921',
+  textSecondary: '#705C50',
+  textMuted: '#8D786A',
+  textInverse: '#FFFFFF',
 
   // Status Colors
   success: '#10B981',
@@ -41,12 +41,12 @@ export const PALETTE = {
   infoMuted: 'rgba(59, 130, 246, 0.15)',
 
   // Loading / Skeleton States
-  skeletonBase: '#2A2119',      // Base block color for skeleton placeholders
-  skeletonHighlight: '#3D2E24', // Pulse highlight for skeleton placeholders
+  skeletonBase: '#EEE4D8',
+  skeletonHighlight: '#F8F2EA',
 
-  // AI Accent (reserved for AI-assisted actions so they stand apart from commerce amber)
-  aiAccent: '#8B5CF6',
-  aiAccentMuted: 'rgba(139, 92, 246, 0.15)',
+  // AI accent stays distinct while remaining within the earth-toned system.
+  aiAccent: '#78604A',
+  aiAccentMuted: 'rgba(120, 96, 74, 0.14)',
 } as const;
 
 export const SPACING = {
@@ -86,15 +86,15 @@ export const TOUCH_TARGET = {
  */
 export const TYPOGRAPHY: Record<string, TextStyle> = {
   displayHero: {
-    fontSize: 32,
-    lineHeight: 40,
+    fontSize: 34,
+    lineHeight: 42,
     fontWeight: '800',
     color: PALETTE.textPrimary,
-    letterSpacing: -0.5,
+    letterSpacing: 0.1,
   },
   display: {
-    fontSize: 28,
-    lineHeight: 34,
+    fontSize: 30,
+    lineHeight: 38,
     fontWeight: '700',
     color: PALETTE.textPrimary,
   },
@@ -102,17 +102,17 @@ export const TYPOGRAPHY: Record<string, TextStyle> = {
     fontSize: 28,
     lineHeight: 34,
     fontWeight: '700',
-    color: PALETTE.primaryLight,
+    color: PALETTE.primary,
   },
   title1: {
-    fontSize: 22,
-    lineHeight: 28,
+    fontSize: 23,
+    lineHeight: 30,
     fontWeight: '700',
     color: PALETTE.textPrimary,
   },
   title2: {
     fontSize: 18,
-    lineHeight: 24,
+    lineHeight: 25,
     fontWeight: '600',
     color: PALETTE.textPrimary,
   },
@@ -124,7 +124,7 @@ export const TYPOGRAPHY: Record<string, TextStyle> = {
   },
   body: {
     fontSize: 15,
-    lineHeight: 21,
+    lineHeight: 22,
     fontWeight: '400',
     color: PALETTE.textSecondary,
   },
@@ -164,8 +164,8 @@ export const ELEVATION = {
     ios: {
       shadowColor: '#000',
       shadowOffset: { width: 0, height: 2 },
-      shadowOpacity: 0.2,
-      shadowRadius: 6,
+      shadowOpacity: 0.08,
+      shadowRadius: 10,
     },
     android: {
       elevation: 2,
@@ -175,8 +175,8 @@ export const ELEVATION = {
     ios: {
       shadowColor: '#000',
       shadowOffset: { width: 0, height: 4 },
-      shadowOpacity: 0.3,
-      shadowRadius: 12,
+      shadowOpacity: 0.12,
+      shadowRadius: 16,
     },
     android: {
       elevation: 8,
@@ -186,8 +186,8 @@ export const ELEVATION = {
     ios: {
       shadowColor: '#000',
       shadowOffset: { width: 0, height: 3 },
-      shadowOpacity: 0.35,
-      shadowRadius: 8,
+      shadowOpacity: 0.14,
+      shadowRadius: 10,
     },
     android: {
       elevation: 6,
@@ -215,8 +215,8 @@ export const COMPONENT_STYLES = StyleSheet.create({
       ios: {
         shadowColor: '#000',
         shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.25,
-        shadowRadius: 4,
+        shadowOpacity: 0.08,
+        shadowRadius: 8,
       },
       android: {
         elevation: 3,
@@ -227,7 +227,7 @@ export const COMPONENT_STYLES = StyleSheet.create({
   primaryButton: {
     minHeight: TOUCH_TARGET.minHeight,
     backgroundColor: PALETTE.primary,
-    borderRadius: RADIUS.md,
+    borderRadius: RADIUS.lg,
     paddingHorizontal: SPACING.xl,
     paddingVertical: SPACING.md,
     flexDirection: 'row',
@@ -266,7 +266,7 @@ export const COMPONENT_STYLES = StyleSheet.create({
 export const PRESSABLE_CONFIG = {
   activeOpacity: 0.7,
   androidRipple: {
-    color: 'rgba(217, 119, 6, 0.2)',
+    color: 'rgba(184, 92, 56, 0.18)',
     borderless: false,
   },
 };

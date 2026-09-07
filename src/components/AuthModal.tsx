@@ -33,6 +33,8 @@ interface RegisteredAccount {
   role: UserRole;
 }
 
+const DEV_AUTH_ENABLED = import.meta.env.DEV && import.meta.env.VITE_DEV_AUTH_ENABLED === 'true';
+
 export const AuthModal: React.FC<AuthModalProps> = ({
   currentLang,
   onSuccess,
@@ -680,8 +682,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           )}
         </div>
 
-        {/* Quick Demo Login */}
-        <div className="mt-5 pt-4 border-t border-[#2d231d] text-center relative z-10">
+        {/* Quick Demo Login: development-only and explicitly enabled. */}
+        {DEV_AUTH_ENABLED ? <div className="mt-5 pt-4 border-t border-[#2d231d] text-center relative z-10">
           <p className="text-[11px] text-stone-400 mb-2">
             {t.quickTestLogin}:
           </p>
@@ -703,7 +705,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               {t.quickDemoCustomerBtn}
             </button>
           </div>
-        </div>
+        </div> : null}
       </motion.div>
     </div>
   );

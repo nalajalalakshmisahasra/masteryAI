@@ -22,6 +22,7 @@ import { CraftProduct, SupportedLanguage } from '../types';
 import { useTranslation } from '../i18n/translations';
 import { speakText } from '../utils/speech';
 import { getLocalizedProduct } from '../utils/productLocalization';
+import { apiFetch } from '../utils/api';
 
 interface CustomerProductDetailProps {
   product: CraftProduct;
@@ -74,7 +75,7 @@ export const CustomerProductDetail: React.FC<CustomerProductDetailProps> = ({
     setIsAiModalOpen(true);
 
     try {
-      const res = await fetch('/api/ai/order-guidance', {
+      const res = await apiFetch('/api/ai/order-guidance', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

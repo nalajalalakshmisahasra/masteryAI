@@ -15,6 +15,7 @@ import { MOCK_PRODUCTS, MOCK_INQUIRIES } from './data/mockData';
 import { speakText, WELCOME_SPEECH_TEXTS, LANGUAGE_CHANGED_TEXTS } from './utils/speech';
 import { isRtlLanguage } from './i18n/languages';
 import { TRANSLATIONS, useTranslation } from './i18n/translations';
+import { apiFetch } from './utils/api';
 
 export default function App() {
   // Localization & Audio
@@ -97,14 +98,14 @@ export default function App() {
   useEffect(() => {
     const fetchInitialData = async () => {
       try {
-        const prodRes = await fetch('/api/products');
+        const prodRes = await apiFetch('/api/products');
         if (prodRes.ok) {
           const data = await prodRes.json();
           const prods = Array.isArray(data) ? data : data?.products;
           if (prods && prods.length > 0) setProducts(prods);
         }
 
-        const inqRes = await fetch('/api/inquiries');
+        const inqRes = await apiFetch('/api/inquiries');
         if (inqRes.ok) {
           const data = await inqRes.json();
           const inqs = Array.isArray(data) ? data : data?.inquiries;
@@ -235,7 +236,7 @@ export default function App() {
   // Reply to Inquiry in Artisan Inbox
   const handleReplyMessage = async (inquiryId: string, replyText: string, lang: SupportedLanguage) => {
     try {
-      const res = await fetch(`/api/inquiries/${inquiryId}/reply`, {
+      const res = await apiFetch(`/api/inquiries/${inquiryId}/reply`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -267,7 +268,7 @@ export default function App() {
     const targetProduct = products.find((p) => p.id === productId);
 
     try {
-      const res = await fetch('/api/inquiries', {
+      const res = await apiFetch('/api/inquiries', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
