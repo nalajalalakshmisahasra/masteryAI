@@ -25,6 +25,13 @@ app.use((req, res, next) => {
 // Persistence Setup
 const DATA_DIR = path.join(process.cwd(), 'data');
 const DATA_FILE = path.join(DATA_DIR, 'craft_mastery_store.json');
+const DEMO_DATA_ENABLED = process.env.NODE_ENV !== 'production' && process.env.DEMO_DATA_ENABLED === 'true';
+const DEMO_PRODUCT_IDS = new Set([
+  'prod-kondapalli-01', 'prod-pochampally-02', 'prod-dokra-03', 'prod-bluepottery-04',
+  'prod-channapatna-05', 'prod-bidriware-06', 'prod-tanjore-07', 'prod-walnut-08',
+  'prod-kalamkari-09', 'prod-tholubommalata-10', 'prod-pashmina-11', 'prod-madhubani-12',
+]);
+const DEMO_INQUIRY_IDS = new Set(['inq-bulk-001', 'inq-bulk-002']);
 
 let productsDb: any[] = [];
 let inquiriesDb: any[] = [];
@@ -52,6 +59,37 @@ function saveStoreToDisk() {
   } catch (err) {
     console.error('Failed to save store to disk:', err);
   }
+}
+
+function isDemoProduct(product: any): boolean {
+  return DEMO_PRODUCT_IDS.has(product?.id);
+}
+
+function visibleProductsFor(auth: NonNullable<Express.Request['auth']>): any[] {
+  const products = DEMO_DATA_ENABLED ? productsDb : productsDb.filter((product) => !isDemoProduct(product));
+  if (auth.role === 'ADMIN') return products;
+  if (auth.role === 'ARTISAN') {
+    return products.filter((product) => product.artisanId === auth.uid || samePhone(product.artisanPhone, auth.phone));
+  }
+  return products.map(({ artisanId, artisanPhone, ...product }) => product);
+}
+
+function visibleInquiriesFor(auth: NonNullable<Express.Request['auth']>): any[] {
+  const inquiries = DEMO_DATA_ENABLED
+    ? inquiriesDb
+    : inquiriesDb.filter((inquiry) => !DEMO_INQUIRY_IDS.has(inquiry.id));
+  if (auth.role === 'ADMIN') return inquiries;
+  const ownedProductIds = new Set(
+    visibleProductsFor({ ...auth, role: 'ARTISAN' })
+      .map((product) => product.id)
+  );
+  return inquiries.filter((inquiry) =>
+    auth.role === 'CUSTOMER'
+      ? inquiry.customerId === auth.uid || samePhone(inquiry.customerPhone, auth.phone)
+      : ownedProductIds.has(inquiry.productId) ||
+        inquiry.artisanId === auth.uid ||
+        samePhone(inquiry.artisanPhone, auth.phone)
+  );
 }
 
 function loadStoreFromDisk() {
@@ -617,14 +655,7 @@ function serializeInquiry(inquiry: any, auth: NonNullable<Express.Request['auth'
 
 app.get('/api/products', (req, res) => {
   const auth = req.auth!;
-  const ownedProducts = productsDb.filter(
-    (product) => product.artisanId === auth.uid || samePhone(product.artisanPhone, auth.phone)
-  );
-  if (auth.role === 'ADMIN') return res.json(productsDb);
-  if (auth.role === 'ARTISAN') return res.json(ownedProducts);
-
-  // Customers receive marketplace fields only; ownership and contact fields stay server-side.
-  res.json(productsDb.map(({ artisanId, artisanPhone, ...product }) => product));
+  res.json(visibleProductsFor(auth));
 });
 
 app.post('/api/products', requireRole('ARTISAN', 'ADMIN'), (req, res) => {
@@ -647,26 +678,14 @@ app.post('/api/products', requireRole('ARTISAN', 'ADMIN'), (req, res) => {
 // 9. Inquiries & 2-way Messages CRUD
 app.get('/api/inquiries', (req, res) => {
   const auth = req.auth!;
-  if (auth.role === 'ADMIN') return res.json(inquiriesDb);
-  const ownedProductIds = new Set(
-    productsDb
-      .filter((product) => product.artisanId === auth.uid || samePhone(product.artisanPhone, auth.phone))
-      .map((product) => product.id)
-  );
-  const visible = inquiriesDb.filter((inquiry) =>
-    auth.role === 'CUSTOMER'
-      ? inquiry.customerId === auth.uid || samePhone(inquiry.customerPhone, auth.phone)
-      : ownedProductIds.has(inquiry.productId) ||
-        inquiry.artisanId === auth.uid ||
-        samePhone(inquiry.artisanPhone, auth.phone)
-  );
+  const visible = visibleInquiriesFor(auth);
   res.json(visible.map((inquiry) => serializeInquiry(inquiry, auth)));
 });
 
 app.post('/api/inquiries', requireRole('CUSTOMER', 'ADMIN'), (req, res) => {
   const auth = req.auth!;
   const profile = usersDb.find((user) => user.uid === auth.uid);
-  const product = productsDb.find((item) => item.id === req.body.productId);
+  const product = visibleProductsFor(auth).find((item) => item.id === req.body.productId);
   if (!product) return res.status(404).json({ error: 'Product not found' });
   const initialMessage = typeof req.body.initialMessage === 'string' ? req.body.initialMessage.trim().slice(0, 5000) : '';
   const newInquiry = {

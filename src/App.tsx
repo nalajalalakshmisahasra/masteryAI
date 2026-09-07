@@ -17,6 +17,13 @@ import { isRtlLanguage } from './i18n/languages';
 import { TRANSLATIONS, useTranslation } from './i18n/translations';
 import { apiFetch } from './utils/api';
 
+const DEMO_MODE = import.meta.env.DEV && import.meta.env.VITE_DEMO_DATA === 'true';
+const DEMO_PRODUCT_IDS = new Set([
+  'prod-kondapalli-01', 'prod-pochampally-02', 'prod-dokra-03', 'prod-bluepottery-04',
+  'prod-channapatna-05', 'prod-bidriware-06', 'prod-tanjore-07', 'prod-walnut-08',
+  'prod-kalamkari-09', 'prod-tholubommalata-10', 'prod-pashmina-11', 'prod-madhubani-12',
+]);
+
 export default function App() {
   // Localization & Audio
   const [currentLang, setCurrentLang] = useState<SupportedLanguage>(() => {
@@ -53,7 +60,7 @@ export default function App() {
   const [selectedProduct, setSelectedProduct] = useState<CraftProduct | null>(null);
 
   // Data Store
-  const [products, setProducts] = useState<CraftProduct[]>(MOCK_PRODUCTS);
+  const [products, setProducts] = useState<CraftProduct[]>(DEMO_MODE ? MOCK_PRODUCTS : []);
   const [inquiries, setInquiries] = useState<ProductInquiry[]>(MOCK_INQUIRIES);
 
   // Check persistent session on initial mount
@@ -102,7 +109,9 @@ export default function App() {
         if (prodRes.ok) {
           const data = await prodRes.json();
           const prods = Array.isArray(data) ? data : data?.products;
-          if (prods && prods.length > 0) setProducts(prods);
+          if (prods) {
+            setProducts(DEMO_MODE ? prods : prods.filter((product: CraftProduct) => !DEMO_PRODUCT_IDS.has(product.id)));
+          }
         }
 
         const inqRes = await apiFetch('/api/inquiries');

@@ -16,7 +16,10 @@ import { normalizePhone } from '../utils/phone';
  * Identity-correct filtering (inquiries/catalog scoped to the logged-in user)
  * is ALWAYS applied, independent of this flag.
  */
-export const DEMO_MODE = process.env.EXPO_PUBLIC_DEMO_DATA !== 'false';
+export const DEMO_MODE =
+  typeof __DEV__ !== 'undefined' &&
+  __DEV__ &&
+  process.env.EXPO_PUBLIC_DEMO_DATA === 'true';
 
 /** Stable ids of the dev-database seed records (mockData.ts). */
 const DEMO_PRODUCT_IDS = new Set([
