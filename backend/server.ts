@@ -9,6 +9,8 @@ import { INITIAL_PRODUCTS, INITIAL_INQUIRIES } from './src/data/mockData.ts';
 import { provisionRole, requireAuth, requireRole, samePhone } from './serverAuth.ts';
 
 dotenv.config();
+// Fallback for `npm run dev` executed from the repository root: load backend/.env too.
+dotenv.config({ path: path.resolve(process.cwd(), 'backend', '.env') });
 
 const app = express();
 const PORT = 3000;

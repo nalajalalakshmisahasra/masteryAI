@@ -1,9 +1,40 @@
+# dependencies
 node_modules/
+frontend/node_modules/
+backend/node_modules/
+
+# builds & generated output
 build/
 dist/
+dist-bundle/
 coverage/
+frontend/.expo/
+frontend/web-build/
+frontend/expo-env.d.ts
+frontend/dist-bundle/
+*.tsbuildinfo
+
+# environment files — NEVER commit real credentials
+.env
+.env.*
+!.env.example
+frontend/.env*
+!frontend/.env.example
+backend/.env*
+!backend/.env.example
+
+# private runtime data (user media, store overrides)
+backend/data/private-media/
+data/private-media/
+
+# native / secrets
+*.jks
+*.p8
+*.p12
+*.key
+*.pem
+*.mobileprovision
+
+# OS / editor noise
 .DS_Store
 *.log
-.env*
-!.env.example
-data/private-media/
