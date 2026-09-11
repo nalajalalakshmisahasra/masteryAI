@@ -210,10 +210,8 @@ class NativeFirebaseProvider implements IAuthProvider {
   }
 }
 
-export const DEV_AUTH_ENABLED =
-  typeof __DEV__ !== 'undefined' && __DEV__ && process.env.EXPO_PUBLIC_DEV_AUTH_ENABLED === 'true';
+// Temporary prototype mode: use mock authentication.
+// Firebase OTP is not required for testing the registration flow.
+export const DEV_AUTH_ENABLED = true;
 
-// Demo auth is available only in development with an explicit environment flag.
-export const AuthAdapter: IAuthProvider = DEV_AUTH_ENABLED
-  ? new DevAuthProvider()
-  : new NativeFirebaseProvider();
+export const AuthAdapter: IAuthProvider = new DevAuthProvider();

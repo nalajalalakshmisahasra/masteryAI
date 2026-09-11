@@ -1,26 +1,23 @@
 import React, { useEffect, useState } from 'react';
 import { View, ActivityIndicator, StyleSheet } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
+
 import { AuthStackNavigator } from './AuthStackNavigator';
 import { ArtisanTabNavigator } from './ArtisanTabNavigator';
 import { CustomerTabNavigator } from './CustomerTabNavigator';
+
 import { AuthAdapter, AuthUser } from '../adapters/auth';
-import { StorageAdapter } from '../adapters/storage';
 import { PALETTE } from '../theme/tokens';
 
 export const RootNavigator: React.FC = () => {
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
-  const [hasSeenHero, setHasSeenHero] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState<boolean>(true);
 
+  // Check whether a user is already logged in
   const checkSession = async () => {
     try {
-      const [user, seenHero] = await Promise.all([
-        AuthAdapter.getCurrentUser(),
-        StorageAdapter.hasSeenHero(),
-      ]);
+      const user = await AuthAdapter.getCurrentUser();
       setCurrentUser(user);
-      setHasSeenHero(seenHero);
     } catch (err) {
       console.warn('Session check error:', err);
     } finally {
@@ -32,26 +29,42 @@ export const RootNavigator: React.FC = () => {
     checkSession();
   }, []);
 
+  // Called after successful Login / Register
   const handleAuthenticated = (user: AuthUser) => {
     setCurrentUser(user);
   };
 
+  // Logout
   const handleLogout = async () => {
-    await AuthAdapter.signOut();
+    try {
+      await AuthAdapter.signOut();
+    } catch (err) {
+      console.warn('Logout error:', err);
+    }
+
     setCurrentUser(null);
   };
 
+  // Switch between Artisan and Customer
   const handleSwitchRole = (newRole: 'ARTISAN' | 'CUSTOMER') => {
     if (currentUser) {
-      const updatedUser = { ...currentUser, role: newRole };
+      const updatedUser: AuthUser = {
+        ...currentUser,
+        role: newRole,
+      };
+
       setCurrentUser(updatedUser);
     }
   };
 
+  // Loading screen
   if (isLoading) {
     return (
       <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color={PALETTE.primary} />
+        <ActivityIndicator
+          size="large"
+          color={PALETTE.primary}
+        />
       </View>
     );
   }
@@ -59,7 +72,9 @@ export const RootNavigator: React.FC = () => {
   return (
     <NavigationContainer
       theme={{
-        dark: true,
+        // White + Brown theme
+        dark: false,
+
         colors: {
           primary: PALETTE.primary,
           background: PALETTE.background,
@@ -68,24 +83,56 @@ export const RootNavigator: React.FC = () => {
           border: PALETTE.surfaceBorder,
           notification: PALETTE.primaryLight,
         },
+
         fonts: {
-          regular: { fontFamily: 'System', fontWeight: '400' },
-          medium: { fontFamily: 'System', fontWeight: '500' },
-          bold: { fontFamily: 'System', fontWeight: '700' },
-          heavy: { fontFamily: 'System', fontWeight: '900' },
+          regular: {
+            fontFamily: 'System',
+            fontWeight: '400',
+          },
+          medium: {
+            fontFamily: 'System',
+            fontWeight: '500',
+          },
+          bold: {
+            fontFamily: 'System',
+            fontWeight: '700',
+          },
+          heavy: {
+            fontFamily: 'System',
+            fontWeight: '900',
+          },
         },
       }}
     >
+
+      {/* 
+        FIRST SCREEN:
+        Language Selection
+
+        HeroPitch is intentionally removed from the initial flow.
+      */}
       {!currentUser ? (
         <AuthStackNavigator
           onAuthenticated={handleAuthenticated}
-          initialRouteName={hasSeenHero ? 'WelcomeLanguage' : 'HeroPitch'}
+          initialRouteName="WelcomeLanguage"
         />
       ) : currentUser.role === 'ARTISAN' ? (
-        <ArtisanTabNavigator onLogout={handleLogout} onSwitchRole={handleSwitchRole} />
+
+        /* ARTISAN APPLICATION */
+        <ArtisanTabNavigator
+          onLogout={handleLogout}
+          onSwitchRole={handleSwitchRole}
+        />
+
       ) : (
-        <CustomerTabNavigator onLogout={handleLogout} onSwitchRole={handleSwitchRole} />
+
+        /* CUSTOMER APPLICATION */
+        <CustomerTabNavigator
+          onLogout={handleLogout}
+          onSwitchRole={handleSwitchRole}
+        />
       )}
+
     </NavigationContainer>
   );
 };

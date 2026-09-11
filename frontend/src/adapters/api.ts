@@ -71,6 +71,23 @@ function getDefaultApiBaseUrl(): string {
 
 export const API_BASE_URL = getDefaultApiBaseUrl();
 
+/** Resolves an auth token, preferring a signed-in Firebase user but
+ *  falling back to the stored session (dev mock auth, or platforms
+ *  like web where @react-native-firebase has no native module). */
+async function getAuthToken(): Promise<string | undefined> {
+  const session = await StorageAdapter.getAuthSession();
+  try {
+    const firebaseUser = getAuth().currentUser;
+    if (firebaseUser) {
+      return await getIdToken(firebaseUser);
+    }
+  } catch (err) {
+    // No native Firebase app (dev/mock mode, or running on web) — ignore
+    // and fall back to the session token below.
+  }
+  return session?.token;
+}
+
 /** A mutation invalidates its related cached GET collection so refreshes are never stale. */
 function invalidateGetCache(endpoint: string): void {
   if (endpoint.startsWith('/products')) getCache.delete('GET:/products');
@@ -91,14 +108,18 @@ async function request<T>(endpoint: string, options: RequestOptions = {}): Promi
     }
   }
 
+  const isFormData = typeof FormData !== 'undefined' && init.body instanceof FormData;
+
   const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
     Accept: 'application/json',
-    ...(options.headers as Record<string, string>),
+    ...((options.headers as Record<string, string>) || {}),
   };
-  const session = await StorageAdapter.getAuthSession();
-  const firebaseUser = getAuth().currentUser;
-  const token = firebaseUser ? await getIdToken(firebaseUser) : session?.token;
+
+  if (!isFormData) {
+    headers['Content-Type'] = 'application/json';
+  }
+
+  const token = await getAuthToken();
   if (token) headers.Authorization = `Bearer ${token}`;
 
   const controller = new AbortController();
@@ -193,6 +214,65 @@ export const ApiAdapter = {
       method: 'POST',
       body: JSON.stringify(userData),
     });
+  },
+
+  // Speech-to-Text
+  async transcribeAudio(
+    audioUri: string,
+    language: string
+  ): Promise<{ transcript: string; language?: string }> {
+    try {
+      const formData = new FormData();
+
+      formData.append(
+        'audio',
+        {
+          uri: audioUri,
+          name: 'voice-note.m4a',
+          type: 'audio/m4a',
+        } as any
+      );
+
+      formData.append('language', language);
+
+      const token = await getAuthToken();
+
+      console.log('Sending audio directly to backend...');
+      console.log('API URL:', `${API_BASE_URL}/speech-to-text`);
+      console.log('Has auth token:', !!token);
+
+      const response = await fetch(
+        `${API_BASE_URL}/speech-to-text`,
+        {
+          method: 'POST',
+          headers: {
+            Accept: 'application/json',
+            ...(token
+              ? {
+                  Authorization: `Bearer ${token}`,
+                }
+              : {}),
+          },
+          body: formData,
+        }
+      );
+
+      const data = await response.json();
+
+      console.log('Speech API response:', data);
+
+      if (!response.ok) {
+        throw new Error(
+          data?.error ||
+          `Speech-to-text request failed: ${response.status}`
+        );
+      }
+
+      return data;
+    } catch (error) {
+      console.error('transcribeAudio error:', error);
+      throw error;
+    }
   },
 
   // AI Services (longer timeout — LLM calls can legitimately take >8s)

@@ -1,4 +1,11 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import {
+  AudioModule,
+  RecordingPresets,
+  setAudioModeAsync,
+  useAudioRecorder,
+  useAudioRecorderState,
+} from 'expo-audio';
 import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
@@ -141,6 +148,10 @@ const ExtractionResult: React.FC<{ result: any; onRetry: () => void }> = ({ resu
 
 export const UploadScreen: React.FC = () => {
   const { t, lang } = useLanguage();
+
+  const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
+  const recorderState = useAudioRecorderState(audioRecorder);
+
   const [selectedImage, setSelectedImage] = useState<PickedImageResult | null>(null);
   // The description starts empty — never prefilled with a sample/demo craft.
   const [voiceNote, setVoiceNote] = useState('');
@@ -180,12 +191,88 @@ export const UploadScreen: React.FC = () => {
     await SpeechAdapter.speak(voiceNote, lang as any, () => setIsSpeakingDescription(false));
   };
 
-  const handleVoiceInput = () => {
+  const handleVoiceInput = async () => {
+  try {
+    console.log('VOICE BUTTON PRESSED');
+
+    if (recorderState.isRecording) {
+      console.log('STOPPING RECORDING...');
+
+      await audioRecorder.stop();
+
+      const audioUri = audioRecorder.uri;
+      console.log('AUDIO URI:', audioUri);
+
+      if (!audioUri) {
+        Alert.alert('Error', 'Recording file was not created.');
+        return;
+      }
+
+      setIsProcessing(true);
+
+      try {
+        console.log('SENDING AUDIO TO ASSEMBLYAI...');
+
+        const result = await ApiAdapter.transcribeAudio(
+          audioUri,
+          lang
+        );
+
+        console.log('TRANSCRIPTION RESULT:', result);
+
+        setVoiceNote(result.transcript || '');
+
+        if (!result.transcript) {
+          Alert.alert(
+            'No Speech Detected',
+            'Please try speaking again.'
+          );
+        }
+      } catch (error) {
+        console.error('TRANSCRIPTION ERROR:', error);
+
+        Alert.alert(
+          'Transcription Failed',
+          'Could not convert your voice to text.'
+        );
+      } finally {
+        setIsProcessing(false);
+      }
+
+      return;
+    }
+
+    console.log('STARTING RECORDING...');
+
+    const permission =
+      await AudioModule.requestRecordingPermissionsAsync();
+
+    if (!permission.granted) {
+      Alert.alert(
+        'Microphone Permission',
+        'Please allow microphone permission to use voice input.'
+      );
+      return;
+    }
+
+    await setAudioModeAsync({
+      playsInSilentMode: true,
+      allowsRecording: true,
+    });
+
+    await audioRecorder.prepareToRecordAsync();
+    audioRecorder.record();
+
+    console.log('RECORDING STARTED');
+  } catch (error) {
+    console.error('VOICE RECORDING ERROR:', error);
+
     Alert.alert(
-      t('yourDescription'),
-      'Voice transcription is not available in this native build. Please type the description, or use the web app for browser speech recognition.'
+      'Recording Error',
+      'Could not start voice recording.'
     );
-  };
+  }
+};
 
   const hasPhoto = Boolean(selectedImage?.uri);
   const currentIndex = hasPhoto ? (isProcessing || extractionResult ? 2 : 1) : 0;
@@ -252,8 +339,8 @@ export const UploadScreen: React.FC = () => {
             accessibilityLabel={t('yourDescription')}
           />
           <View style={styles.voiceActions}>
-            <Pressable
-              onPress={handleVoiceInput}
+           <Pressable
+  onPress={handleVoiceInput}
               style={styles.voiceAction}
               accessibilityRole="button"
               accessibilityLabel="Use voice input"

@@ -6,45 +6,45 @@ import { Platform, StyleSheet, TextStyle, ViewStyle } from 'react-native';
  * Enforces native touch minimums, accessible contrasts, and culturally rooted aesthetics.
  */
 
-export const PALETTE = {
-  // Warm ivory, terracotta and muted amber create a grounded craft palette.
-  primary: '#B85C38',
-  primaryDark: '#8F4329',
-  primaryLight: '#C58A3A',
-  primaryMuted: 'rgba(184, 92, 56, 0.12)',
-  primaryPressed: '#8F4329',
+ export const PALETTE = {
+  // White, cream and earthy brown craft palette.
+  primary: '#6B4226',
+  primaryDark: '#3E2618',
+  primaryLight: '#A67C52',
+  primaryMuted: 'rgba(107, 66, 38, 0.12)',
+  primaryPressed: '#4F301D',
 
-  // Light surface architecture keeps content and craft imagery prominent.
-  background: '#FAF7F0',
+  // Clean warm-white surfaces keep handmade craft imagery prominent.
+  background: '#FFFDF9',
   surface: '#FFFFFF',
-  surfaceElevated: '#FFFDF8',
-  surfaceHighlight: '#F5EDE3',
-  surfaceBorder: '#E8DED2',
-  borderActive: '#B85C38',
-  inputBg: '#FFFDF8',
-  scrim: 'rgba(0, 0, 0, 0.6)', // Backdrop overlay for sheets/modals
+  surfaceElevated: '#FFFCF7',
+  surfaceHighlight: '#F5EDE4',
+  surfaceBorder: '#E6D8C8',
+  borderActive: '#6B4226',
+  inputBg: '#FFFCF7',
+  scrim: 'rgba(62, 38, 24, 0.55)',
 
-  // Typographic tones maintain warm, readable contrast on light surfaces.
-  textPrimary: '#3B2921',
-  textSecondary: '#705C50',
-  textMuted: '#8D786A',
+  // Warm brown typography.
+  textPrimary: '#3E2618',
+  textSecondary: '#6F5A49',
+  textMuted: '#8A7665',
   textInverse: '#FFFFFF',
 
   // Status Colors
-  success: '#10B981',
-  successMuted: 'rgba(16, 185, 129, 0.15)',
-  error: '#EF4444',
-  errorMuted: 'rgba(239, 68, 68, 0.15)',
-  warning: '#F59E0B',
-  warningMuted: 'rgba(245, 158, 11, 0.15)',
-  info: '#3B82F6',
-  infoMuted: 'rgba(59, 130, 246, 0.15)',
+  success: '#3F7D5A',
+  successMuted: 'rgba(63, 125, 90, 0.15)',
+  error: '#B94A48',
+  errorMuted: 'rgba(185, 74, 72, 0.15)',
+  warning: '#A67C52',
+  warningMuted: 'rgba(166, 124, 82, 0.15)',
+  info: '#6F7F78',
+  infoMuted: 'rgba(111, 127, 120, 0.15)',
 
   // Loading / Skeleton States
-  skeletonBase: '#EEE4D8',
-  skeletonHighlight: '#F8F2EA',
+  skeletonBase: '#EDE3D8',
+  skeletonHighlight: '#F8F3ED',
 
-  // AI accent stays distinct while remaining within the earth-toned system.
+  // AI accent - muted earthy brown.
   aiAccent: '#78604A',
   aiAccentMuted: 'rgba(120, 96, 74, 0.14)',
 } as const;

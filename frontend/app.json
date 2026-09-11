@@ -15,6 +15,8 @@
       }
     },
     "android": {
+      "package": "com.craftmastery.app",
+      "googleServicesFile": "./google-services.json",
       "adaptiveIcon": {
         "backgroundColor": "#16120F"
       },
@@ -34,7 +36,9 @@
           "cameraPermission": "Craft Mastery needs camera access to capture your handmade products."
         }
       ],
-      "expo-image"
+      "expo-image",
+      "expo-status-bar",
+      "expo-audio"
     ]
   }
 }
