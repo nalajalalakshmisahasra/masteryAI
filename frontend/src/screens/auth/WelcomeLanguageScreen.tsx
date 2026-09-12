@@ -1,3 +1,4 @@
+
 import React from 'react';
 import {
   ScrollView,
@@ -126,38 +127,89 @@ const LANGUAGES: {
   },
 ];
 
-const TELUGU_GREETING = 'క్రాఫ్ట్ మాస్టరీకి స్వాగతం';
+/**
+ * Welcome greeting for each supported language.
+ *
+ * IMPORTANT:
+ * The greeting text must also be in the selected language.
+ * Otherwise the TTS engine may try to pronounce Telugu text
+ * using Hindi/Tamil/etc. voice.
+ */
+const WELCOME_GREETINGS: Record<
+  MobileSupportedLanguage,
+  string
+> = {
+  en: 'Welcome to Craft Mastery',
+
+  te: 'క్రాఫ్ట్ మాస్టరీకి స్వాగతం',
+
+  hi: 'क्राफ्ट मास्टरी में आपका स्वागत है',
+
+  ta: 'கிராஃப்ட் மாஸ்டரிக்கு வரவேற்கிறோம்',
+
+  kn: 'ಕ್ರಾಫ್ಟ್ ಮಾಸ್ಟರಿಗೆ ಸ್ವಾಗತ',
+
+  mr: 'क्राफ्ट मास्टरीमध्ये आपले स्वागत आहे',
+
+  bn: 'ক্রাফট মাস্টারিতে স্বাগতম',
+
+  ml: 'ക്രാഫ്റ്റ് മാസ്റ്ററിയിലേക്ക് സ്വാഗതം',
+
+  gu: 'ક્રાફ્ટ માસ્ટરીમાં આપનું સ્વાગત છે',
+
+  pa: 'ਕ੍ਰਾਫਟ ਮਾਸਟਰੀ ਵਿੱਚ ਤੁਹਾਡਾ ਸੁਆਗਤ ਹੈ',
+
+  or: 'କ୍ରାଫ୍ଟ ମାଷ୍ଟରୀକୁ ସ୍ୱାଗତ',
+
+  as: 'ক্ৰাফ্ট মাষ্টাৰীলৈ স্বাগতম',
+
+  ur: 'کرافٹ ماسٹری میں خوش آمدید',
+};
 
 export const WelcomeLanguageScreen: React.FC<Props> = ({
   navigation,
 }) => {
   const { lang, setLang, t } = useLanguage();
 
+  /**
+   * Called whenever the user selects a language.
+   *
+   * 1. Save selected language
+   * 2. Get greeting in that language
+   * 3. Send same language code to SpeechAdapter
+   */
   const handleSelect = (
     code: MobileSupportedLanguage
   ) => {
     setLang(code);
 
-    const greeting =
-      code === 'en'
-        ? t('welcomeGreeting')
-        : TELUGU_GREETING;
-
-    SpeechAdapter.speak(greeting, code);
-  };
-
-  const handleHearGreeting = () => {
-    const greeting =
-      lang === 'en'
-        ? t('welcomeGreeting')
-        : TELUGU_GREETING;
+    const greeting = WELCOME_GREETINGS[code];
 
     SpeechAdapter.speak(
       greeting,
-      lang as MobileSupportedLanguage
+      code
     );
   };
 
+  /**
+   * Play the greeting for the currently selected language.
+   */
+  const handleHearGreeting = () => {
+    const selectedLanguage =
+      lang as MobileSupportedLanguage;
+
+    const greeting =
+      WELCOME_GREETINGS[selectedLanguage];
+
+    SpeechAdapter.speak(
+      greeting,
+      selectedLanguage
+    );
+  };
+
+  /**
+   * Continue to phone authentication.
+   */
   const handleContinue = () => {
     navigation.navigate('PhoneAuth');
   };
@@ -342,3 +394,4 @@ const styles = StyleSheet.create({
     paddingTop: SPACING.xxl,
   },
 });
+

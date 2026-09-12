@@ -305,12 +305,11 @@ export default function App() {
     }
   };
 
-  return (
-    <div
-      dir={isRtlLanguage(currentLang) ? 'rtl' : 'ltr'}
-      className="min-h-screen bg-stone-950 text-stone-100 flex flex-col font-sans selection:bg-amber-600 selection:text-white"
-    >
-      {/* 1. Global Navigation Header */}
+ return (
+  <div
+    dir={isRtlLanguage(currentLang) ? 'rtl' : 'ltr'}
+    className="min-h-screen bg-[#FFFDF9] text-[#3E2618] flex flex-col font-sans selection:bg-[#6B4226] selection:text-white"
+  >
       <Header
         currentLang={currentLang}
         onSelectLang={(lang) => {
@@ -421,13 +420,15 @@ export default function App() {
           /* Unauthenticated Landing / Blank placeholder while welcome/auth modals guide user */
           <div className="flex-1 flex items-center justify-center min-h-[60vh] p-8 text-center">
             <div className="max-w-md mx-auto">
-              <div className="w-16 h-16 rounded-2xl bg-amber-600/20 border border-amber-500/30 text-amber-300 mx-auto mb-4 flex items-center justify-center">
-                <span className="text-3xl">🏺</span>
-              </div>
-              <h2 className="text-2xl font-serif font-bold text-amber-200 mb-2">
-                Craft Mastery
-              </h2>
-              <p className="text-sm text-stone-400">
+             <div className="w-16 h-16 rounded-2xl bg-[#F5EDE4] border border-[#D8C2AA] text-[#6B4226] mx-auto mb-4 flex items-center justify-center">
+  <span className="text-3xl">🏺</span>
+</div>
+
+<h2 className="text-2xl font-serif font-bold text-[#6B4226] mb-2">
+  Craft Mastery
+</h2>
+
+<p className="text-sm text-[#7A6858]">
                 {TRANSLATIONS[currentLang]?.tagline || 'Multilingual AI Marketplace for Artisans & Discerning Customers'}
               </p>
             </div>

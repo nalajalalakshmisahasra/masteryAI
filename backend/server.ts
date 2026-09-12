@@ -1,4 +1,5 @@
 import express from 'express';
+import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
@@ -13,18 +14,48 @@ dotenv.config();
 dotenv.config({ path: path.resolve(process.cwd(), 'backend', '.env') });
 
 const app = express();
+
 const PORT = 3000;
+const speechUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 15 * 1024 * 1024, // 15 MB
+  },
+});
+
+// -------------------------------------------------------------
+// Speech-to-Text (AssemblyAI) configuration
+// -------------------------------------------------------------
+const ASSEMBLYAI_API_KEY = process.env.ASSEMBLYAI_API_KEY;
+
+/**
+ * AssemblyAI's `language_code` parameter only accepts a fixed set of codes.
+ * Most Indian regional languages this app supports (Telugu, Tamil, Kannada,
+ * Marathi, Bengali, Malayalam, Gujarati, Punjabi, Odia, Assamese, Urdu) are
+ * NOT in AssemblyAI's supported set as of this writing — passing one would
+ * return an API error, not just a poor transcription. Verify current
+ * coverage at https://www.assemblyai.com/docs before expanding this list.
+ * For anything outside the confirmed-supported set, we fall back to
+ * automatic language detection instead of guessing.
+ */
+const ASSEMBLYAI_SUPPORTED_LANGUAGE_CODES = new Set(['en', 'hi']);
+
+function resolveAssemblyLanguageCode(requested: unknown): { language_code?: string; language_detection?: boolean } {
+  if (typeof requested === 'string' && ASSEMBLYAI_SUPPORTED_LANGUAGE_CODES.has(requested)) {
+    return { language_code: requested };
+  }
+  return { language_detection: true };
+}
 
 const REQUEST_WINDOW_MS = 60_000;
 const requestBuckets = new Map<string, { count: number; resetAt: number }>();
 const MAX_STRING_LENGTH = 5000;
 const ALLOWED_ORIGINS = new Set(
-  (process.env.ALLOWED_ORIGINS || 'http://localhost:3000,http://localhost:5173,http://localhost:5174')
+  (process.env.ALLOWED_ORIGINS || 'http://localhost:3000,http://localhost:5173,http://localhost:5174,http://localhost:8082,http://localhost:19006')
     .split(',')
     .map((origin) => origin.trim())
     .filter(Boolean)
 );
-
 function clientError(res: express.Response, status: number, error: string) {
   return res.status(status).json({ error });
 }
@@ -88,14 +119,16 @@ function rejectOversizedRouteBodies(req: express.Request, res: express.Response,
   const contentLength = Number(req.header('content-length') || 0);
   if (!contentLength) return next();
   const route = req.url.replace(/^\/api\/v1/, '/api');
-  const limit = route.startsWith('/api/ai/')
-    ? 256 * 1024
-    : route.startsWith('/api/users')
-      ? 32 * 1024
-      : route.startsWith('/api/inquiries')
-        ? 256 * 1024
-        : route.startsWith('/api/products')
-          ? 20 * 1024 * 1024
+ const limit = route.startsWith('/api/ai/')
+  ? 256 * 1024
+  : route.startsWith('/api/users')
+    ? 32 * 1024
+    : route.startsWith('/api/inquiries')
+      ? 256 * 1024
+      : route.startsWith('/api/products')
+        ? 20 * 1024 * 1024
+        : route.startsWith('/api/speech-to-text')
+          ? 15 * 1024 * 1024
           : 256 * 1024;
   if (contentLength > limit) return clientError(res, 413, 'Request body is too large');
   return next();
@@ -551,6 +584,7 @@ app.get('/api/services/status', (req, res) => {
       firebase: Boolean(process.env.FIREBASE_PROJECT_ID || process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID),
       supabase: Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_PUBLISHABLE_KEY),
       database: Boolean(process.env.DATABASE_URL),
+      assemblyAI: Boolean(ASSEMBLYAI_API_KEY),
     },
     endpoints: {
       apiBaseUrl: process.env.EXPO_PUBLIC_API_BASE_URL || 'http://localhost:3000/api/v1',
@@ -590,6 +624,86 @@ app.delete('/api/files/:id', requireRole('ARTISAN', 'ADMIN'), validateParam('id'
   }
   saveStoreToDisk();
   return res.status(204).send();
+});
+
+// 1a. Speech-to-Text Transcription (AssemblyAI)
+app.post('/api/speech-to-text', aiRateLimit, speechUpload.single('audio'), async (req, res) => {
+  try {
+    if (!ASSEMBLYAI_API_KEY) {
+      return clientError(res, 500, 'Speech-to-text is not configured on the server (missing ASSEMBLYAI_API_KEY)');
+    }
+    const file = (req as any).file as { buffer: Buffer; size: number } | undefined;
+    if (!file || !file.buffer || file.buffer.length === 0) {
+      return clientError(res, 400, 'No audio file received');
+    }
+
+    // 1. Upload the raw audio bytes to AssemblyAI's temporary storage.
+    const uploadResponse = await fetch('https://api.assemblyai.com/v2/upload', {
+      method: 'POST',
+      headers: {
+        authorization: ASSEMBLYAI_API_KEY,
+        'content-type': 'application/octet-stream',
+      },
+        body: new Uint8Array(file.buffer),
+    });
+    if (!uploadResponse.ok) {
+      console.error('[Speech] AssemblyAI upload failed:', await uploadResponse.text());
+      return clientError(res, 502, 'Failed to upload audio for transcription');
+    }
+    const { upload_url } = (await uploadResponse.json()) as { upload_url: string };
+
+    // 2. Kick off the transcription job.
+    const transcriptResponse = await fetch('https://api.assemblyai.com/v2/transcript', {
+      method: 'POST',
+      headers: {
+        authorization: ASSEMBLYAI_API_KEY,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        audio_url: upload_url,
+        ...resolveAssemblyLanguageCode(req.body?.language),
+      }),
+    });
+    if (!transcriptResponse.ok) {
+      console.error('[Speech] AssemblyAI transcript request failed:', await transcriptResponse.text());
+      return clientError(res, 502, 'Failed to start transcription');
+    }
+    const { id: transcriptId } = (await transcriptResponse.json()) as { id: string };
+
+    // 3. AssemblyAI transcribes asynchronously — poll until done.
+    const POLL_INTERVAL_MS = 2000;
+    const MAX_POLLS = 30; // ~60s ceiling before giving up
+    let result: any = null;
+
+    for (let attempt = 0; attempt < MAX_POLLS; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+      const pollResponse = await fetch(`https://api.assemblyai.com/v2/transcript/${transcriptId}`, {
+        headers: { authorization: ASSEMBLYAI_API_KEY },
+      });
+      if (!pollResponse.ok) {
+        console.error('[Speech] AssemblyAI poll failed:', await pollResponse.text());
+        return clientError(res, 502, 'Failed to check transcription status');
+      }
+      result = await pollResponse.json();
+      if (result.status === 'completed' || result.status === 'error') break;
+    }
+
+    if (!result || result.status === 'error') {
+      console.error('[Speech] AssemblyAI transcription error:', result?.error);
+      return clientError(res, 502, 'Transcription failed');
+    }
+    if (result.status !== 'completed') {
+      return clientError(res, 504, 'Transcription timed out — please try a shorter recording');
+    }
+
+    return res.json({
+      transcript: result.text || '',
+      language: result.language_code || req.body?.language,
+    });
+  } catch (err) {
+    console.error('[Speech] /api/speech-to-text failed:', err);
+    return clientError(res, 500, 'Speech-to-text failed');
+  }
 });
 
 // 2. AI Product Information Extraction & Incomplete Info Detection
@@ -1086,287 +1200,3 @@ app.post('/api/products', requireRole('ARTISAN', 'ADMIN'), validateBody([...PROD
     clientError(res, 400, 'Invalid product image');
   }
 });
-
-app.delete('/api/products/:id', requireRole('ARTISAN', 'ADMIN'), validateParam('id', /^[A-Za-z0-9_-]{1,100}$/), (req, res) => {
-  const product = productsDb.find((item) => item.id === req.params.id);
-  if (!product) return clientError(res, 404, 'Product not found');
-  if (req.auth!.role !== 'ADMIN' && product.artisanId !== req.auth!.uid && !samePhone(product.artisanPhone, req.auth!.phone)) {
-    return clientError(res, 403, 'You cannot modify this product');
-  }
-  for (const file of filesDb.filter((item) => item.productId === product.id)) removeStoredFile(file);
-  filesDb = filesDb.filter((item) => item.productId !== product.id);
-  productsDb = productsDb.filter((item) => item.id !== product.id);
-  saveStoreToDisk();
-  return res.status(204).send();
-});
-
-// 9. Inquiries & 2-way Messages CRUD
-app.get('/api/inquiries', (req, res) => {
-  const auth = req.auth!;
-  const visible = visibleInquiriesFor(auth);
-  res.json(visible.map((inquiry) => serializeInquiry(inquiry, auth)));
-});
-
-app.post('/api/inquiries', requireRole('CUSTOMER', 'ADMIN'), validateBody([
-  'productId', 'productTitle', 'productImage', 'artisanId', 'artisanPhone', 'artisanName', 'customerId',
-  'customerName', 'customerPhone', 'customerLanguage', 'artisanLanguage', 'requestedQuantity', 'initialMessage',
-  'id', 'createdAt', 'updatedAt', 'status', 'messages',
-], ['productId']), validateString('productId', 100, true), validateString('initialMessage', 5000), validateLanguage('customerLanguage'), validateInquiryInput, async (req, res) => {
-  const auth = req.auth!;
-  const profile = usersDb.find((user) => user.uid === auth.uid);
-  const product = visibleProductsFor(auth).find((item) => item.id === req.body.productId);
-  if (!product) return res.status(404).json({ error: 'Product not found' });
-  const initialMessage = typeof req.body.initialMessage === 'string' ? req.body.initialMessage.trim().slice(0, 5000) : '';
-  const newInquiry = {
-    productId: product.id,
-    productTitle: product.title,
-    productImage: product.enhancedImageUrl || product.originalImageUrl,
-    artisanId: product.artisanId,
-    artisanPhone: product.artisanPhone,
-    artisanName: product.artisanName,
-    customerId: auth.uid,
-    customerName: profile?.name || 'Customer',
-    customerPhone: auth.phone,
-    customerLanguage: req.body.customerLanguage || 'en',
-    artisanLanguage: product.artisanLanguage || 'te',
-    requestedQuantity: req.body.requestedQuantity,
-    initialMessage: req.body.initialMessage,
-    id: `inq-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    status: 'PENDING',
-    messages: initialMessage
-      ? [{
-          id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          inquiryId: product.id,
-          senderRole: 'CUSTOMER',
-          senderName: profile?.name || 'Customer',
-          originalText: initialMessage,
-          originalLang: req.body.customerLanguage || 'en',
-          timestamp: new Date().toISOString(),
-        }]
-      : [],
-  };
-  newInquiry.messages[0] && (newInquiry.messages[0].inquiryId = newInquiry.id);
-  inquiriesDb.unshift(newInquiry);
-  saveStoreToDisk();
-  res.status(201).json({ inquiry: serializeInquiry(newInquiry, auth) });
-});
-
-app.post('/api/inquiries/:id/messages', validateParam('id', /^[A-Za-z0-9_-]{1,100}$/), validateBody(['originalText', 'text', 'senderRole', 'senderName', 'inquiryId']), validateMessageInput, (req, res) => {
-  const { id } = req.params;
-  const inquiry = inquiriesDb.find((inq) => inq.id === id);
-  const auth = req.auth!;
-
-  if (!inquiry) {
-    return res.status(404).json({ error: 'Inquiry not found' });
-  }
-  const isParticipant =
-    inquiry.customerId === auth.uid ||
-    inquiry.artisanId === auth.uid ||
-    samePhone(inquiry.customerPhone, auth.phone) ||
-    samePhone(inquiry.artisanPhone, auth.phone);
-  if (auth.role !== 'ADMIN' && !isParticipant) {
-    return res.status(403).json({ error: 'You cannot access this inquiry' });
-  }
-
-  const message = {
-    id: `msg-${Date.now()}`,
-    inquiryId: id,
-    senderRole: auth.role === 'ADMIN'
-      ? 'ADMIN'
-      : (inquiry.artisanId === auth.uid || samePhone(inquiry.artisanPhone, auth.phone) ? 'ARTISAN' : 'CUSTOMER'),
-    senderName: auth.role === 'ADMIN'
-      ? 'Administrator'
-      : (inquiry.artisanId === auth.uid || samePhone(inquiry.artisanPhone, auth.phone) ? inquiry.artisanName : inquiry.customerName),
-    originalText: String(req.body.originalText || req.body.text || '').slice(0, 5000),
-    timestamp: new Date().toISOString(),
-  };
-  if (!message.originalText) return res.status(400).json({ error: 'Message text is required' });
-
-  if (!inquiry.messages) inquiry.messages = [];
-  inquiry.messages.push(message);
-  inquiry.updatedAt = new Date().toISOString();
-  saveStoreToDisk();
-  res.status(201).json({ message, inquiry: serializeInquiry(inquiry, auth) });
-});
-
-// 2-Way Multilingual Reply Endpoint
-app.post('/api/inquiries/:id/reply', validateParam('id', /^[A-Za-z0-9_-]{1,100}$/), validateBody(['originalText', 'originalLang', 'senderRole', 'senderName'], ['originalText']), validateString('originalText', 5000, true), validateLanguage('originalLang'), async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { originalText, originalLang } = req.body;
-    const auth = req.auth!;
-    const inquiry = inquiriesDb.find((inq) => inq.id === id);
-
-    if (!inquiry) {
-      return res.status(404).json({ error: 'Inquiry not found' });
-    }
-    const isAdmin = auth.role === 'ADMIN';
-    const isArtisan = inquiry.artisanId === auth.uid || samePhone(inquiry.artisanPhone, auth.phone);
-    const isCustomer = inquiry.customerId === auth.uid || samePhone(inquiry.customerPhone, auth.phone);
-    if (auth.role !== 'ADMIN' && !isArtisan && !isCustomer) {
-      return res.status(403).json({ error: 'You cannot access this inquiry' });
-    }
-    if (typeof originalText !== 'string' || !originalText.trim()) {
-      return res.status(400).json({ error: 'Reply text is required' });
-    }
-
-    const senderRole = isAdmin ? 'ADMIN' : isArtisan ? 'ARTISAN' : 'CUSTOMER';
-    const targetLang = senderRole === 'ARTISAN' ? (inquiry.customerLanguage || 'en') : (inquiry.artisanLanguage || 'te');
-    let translatedText = originalText;
-
-    if (targetLang !== originalLang) {
-      const ai = getGemini();
-      if (ai) {
-        try {
-          const prompt = `Translate this message for an Indian handcrafted artisan marketplace from ${LANGUAGE_NAMES[originalLang] || originalLang} to ${LANGUAGE_NAMES[targetLang] || targetLang}. Keep it polite, clear, and natural.\n\n"${originalText}"`;
-          const response = await ai.models.generateContent({
-            model: GEMINI_MODEL,
-            contents: prompt,
-          });
-          translatedText = response.text?.trim() || originalText;
-        } catch (translationErr) {
-          console.warn('AI translation failed, using original text:', translationErr);
-          translatedText = originalText;
-        }
-      }
-    }
-
-    const newMessage = {
-      id: `msg-${Date.now()}`,
-      inquiryId: id,
-      senderRole,
-      senderName: senderRole === 'ARTISAN' ? inquiry.artisanName : senderRole === 'CUSTOMER' ? inquiry.customerName : 'Administrator',
-      originalText,
-      originalLang: originalLang || 'te',
-      translatedText,
-      translatedLang: targetLang,
-      timestamp: new Date().toISOString(),
-    };
-
-    if (!inquiry.messages) inquiry.messages = [];
-    inquiry.messages.push(newMessage);
-    inquiry.updatedAt = new Date().toISOString();
-    inquiry.status = 'IN_PROGRESS';
-
-    saveStoreToDisk();
-    return res.status(200).json(serializeInquiry(inquiry, auth));
-  } catch (err: any) {
-    console.error('Error in /api/inquiries/:id/reply:', err);
-    res.status(500).json({ error: 'Failed to send reply' });
-  }
-});
-
-// 10. User Profiles (Auth/Onboarding Persistence)
-app.get('/api/users/:phone', validateParam('phone', /^\+?[0-9 ()-]{7,20}$/), (req, res) => {
-  const { phone } = req.params;
-  if (!req.auth || (req.auth.role !== 'ADMIN' && !samePhone(phone, req.auth.phone))) {
-    return res.status(403).json({ error: 'You cannot access this profile' });
-  }
-  const user = usersDb.find((u) => samePhone(u.phone, phone));
-  if (!user) return res.status(404).json({ error: 'User not found' });
-  if (req.auth.role === 'ADMIN') return res.json({ user });
-  const { uid, ...safeUser } = user;
-  res.json({ user: safeUser });
-});
-
-app.post('/api/users', validateBody(['name', 'language', 'onboardingComplete', 'craftSpecialty', 'location', 'shoppingInterests', 'phone', 'role']), validateString('name', 200), validateString('craftSpecialty', 500), validateString('location', 300), validateString('shoppingInterests', 500), validateLanguage('language'), (req, res) => {
-  const { name, language, onboardingComplete, craftSpecialty, location, shoppingInterests } = req.body;
-  const auth = req.auth!;
-  const phone = auth.phone;
-  if (onboardingComplete !== undefined && typeof onboardingComplete !== 'boolean') return clientError(res, 400, 'Invalid onboarding state');
-
-  let user = usersDb.find((u) => u.uid === auth.uid || samePhone(u.phone, phone));
-  if (user) {
-    Object.assign(user, {
-      uid: auth.uid,
-      name: name !== undefined ? name : user.name,
-      role: auth.role,
-      language: language !== undefined ? language : user.language,
-      onboardingComplete: onboardingComplete !== undefined ? onboardingComplete : user.onboardingComplete,
-      craftSpecialty: craftSpecialty !== undefined ? craftSpecialty : user.craftSpecialty,
-      location: location !== undefined ? location : user.location,
-      shoppingInterests: shoppingInterests !== undefined ? shoppingInterests : user.shoppingInterests,
-      updatedAt: new Date().toISOString(),
-    });
-  } else {
-    user = {
-      uid: auth.uid,
-      phone,
-      name: name || (auth.role === 'ARTISAN' ? 'Artisan Maker' : 'Customer Buyer'),
-      role: auth.role,
-      language: language || 'en',
-      onboardingComplete: Boolean(onboardingComplete),
-      craftSpecialty: craftSpecialty || '',
-      location: location || '',
-      shoppingInterests: shoppingInterests || '',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-    usersDb.push(user);
-  }
-  saveStoreToDisk();
-  res.status(200).json({ user });
-});
-
-// Role changes are an administrative operation; clients cannot assign themselves a role.
-app.post('/api/admin/users/:uid/role', requireRole('ADMIN'), validateParam('uid', /^[A-Za-z0-9_-]{1,128}$/), validateBody(['role'], ['role']), async (req, res) => {
-  const { uid } = req.params;
-  const role = req.body?.role;
-  if (role !== 'ARTISAN' && role !== 'CUSTOMER') {
-    return res.status(400).json({ error: 'Only ARTISAN or CUSTOMER roles may be provisioned' });
-  }
-  try {
-    await provisionRole(uid, role);
-    const user = usersDb.find((item) => item.uid === uid);
-    if (user) {
-      user.role = role;
-      user.updatedAt = new Date().toISOString();
-      saveStoreToDisk();
-    }
-    return res.json({ uid, role });
-  } catch (err) {
-    console.error('[Auth] Role provisioning failed:', err instanceof Error ? err.message : err);
-    return res.status(500).json({ error: 'Role provisioning failed' });
-  }
-});
-
-app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-  console.error('[API] Unhandled request error:', err);
-  return clientError(res, 500, 'Internal server error');
-});
-
-// Seed Initial Data if store is empty
-const loaded = loadStoreFromDisk();
-if (!loaded || productsDb.length === 0) {
-  productsDb = [...INITIAL_PRODUCTS];
-  inquiriesDb = [...INITIAL_INQUIRIES];
-  saveStoreToDisk();
-}
-reconcileStoredFiles();
-
-// -------------------------------------------------------------
-// Vite Middleware / Static Serving
-// -------------------------------------------------------------
-async function startServer() {
-  if (process.env.NODE_ENV !== 'production') {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
-    });
-    app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
-    app.get('*', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
-    });
-  }
-
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Craft Mastery server active on http://0.0.0.0:${PORT}`);
-  });
-}
-
-startServer();
