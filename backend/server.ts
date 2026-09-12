@@ -5,7 +5,6 @@ import fs from 'fs';
 import crypto from 'crypto';
 import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
-import { createServer as createViteServer } from 'vite';
 import { INITIAL_PRODUCTS, INITIAL_INQUIRIES } from './src/data/mockData.ts';
 import { provisionRole, requireAuth, requireRole, samePhone } from './serverAuth.ts';
 
@@ -1199,4 +1198,17 @@ app.post('/api/products', requireRole('ARTISAN', 'ADMIN'), validateBody([...PROD
     console.error('[Media] Product upload rejected:', err instanceof Error ? err.message : err);
     clientError(res, 400, 'Invalid product image');
   }
+});
+
+// -------------------------------------------------------------
+// Start the server
+// -------------------------------------------------------------
+// IMPORTANT: this was missing entirely before — every route above was
+// defined but the HTTP server never bound to a port, so no request from
+// any frontend (web or mobile) could ever reach this API. Most hosts
+// (Render, Railway, Fly, etc.) inject the port to bind via process.env.PORT,
+// so that must take priority over the hardcoded local dev PORT constant.
+const listenPort = Number(process.env.PORT) || PORT;
+app.listen(listenPort, () => {
+  console.log(`Craft Mastery API listening on port ${listenPort}`);
 });
