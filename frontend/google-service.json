@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "57935273282",
+    "project_id": "craft-mastery-ai",
+    "storage_bucket": "craft-mastery-ai.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:57935273282:android:e00e1839f8eff999267cdb",
+        "android_client_info": {
+          "package_name": "com.craftmastery.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDLZ2iap1cLIPscjFbd_lCeiLNOwVduDrw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
