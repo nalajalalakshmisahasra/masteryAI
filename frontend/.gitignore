@@ -1,0 +1,74 @@
+# Dependencies
+*.zip
+node_modules/
+**/node_modules/
+
+# Environment variables / secrets
+.env
+.env.*
+!.env.example
+
+# Expo
+.expo/
+.expo-shared/
+web-build/
+dist/
+
+# React / Vite
+frontend/dist/
+frontend/build/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+
+# TypeScript
+*.tsbuildinfo
+
+# Android / iOS generated files
+android/
+ios/
+
+# Prisma
+*.db
+*.db-journal
+
+# Firebase / credentials
+google-services.json
+GoogleService-Info.plist
+firebase-service-account.json
+service-account.json
+
+# Certificates / keys
+*.pem
+*.key
+*.p12
+*.keystore
+*.jks
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# Python environment files
+backend/.env
+backend/.env.*
+
+# Temporary files
+*.tmp
+*.temp

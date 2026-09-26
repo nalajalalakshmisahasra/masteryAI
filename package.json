@@ -1,0 +1,23 @@
+{
+  "name": "craft-mastery",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Craft Mastery — AI-driven market linkage and smart cataloging for marginalized artisans (SIH 2026, PS 26090). Root package only orchestrates the frontend and backend workspaces.",
+  "scripts": {
+    "setup": "npm --prefix backend install && npm --prefix frontend install",
+    "dev": "npm --prefix backend run dev",
+    "dev:web": "npm --prefix backend run dev",
+    "mobile": "npm --prefix frontend run start",
+    "mobile:android": "npm --prefix frontend run android",
+    "mobile:ios": "npm --prefix frontend run ios",
+    "mobile:lint": "npm --prefix frontend run typecheck",
+    "build": "npm --prefix backend run build",
+    "start": "npm --prefix backend run start",
+    "lint": "npm --prefix backend run lint && npm --prefix frontend run typecheck"
+  },
+  "dependencies": {
+    "axios": "^1.20.0",
+    "form-data": "^4.0.6",
+    "multer": "^2.4.0"
+  }
+}
