@@ -25,7 +25,18 @@
     }
   ],
   "inquiries": [],
-  "users": [],
+  "users": [
+    {
+      "uid": "dev-uid-6303079821",
+      "phone": "6303079821",
+      "name": "sahasra",
+      "email": "",
+      "location": "Andhra Pradesh, India",
+      "role": "ARTISAN",
+      "onboardingComplete": true,
+      "updatedAt": "2026-09-26T16:46:14.728Z"
+    }
+  ],
   "files": [],
-  "savedAt": "2026-09-26T14:35:31.097Z"
+  "savedAt": "2026-09-26T16:46:14.728Z"
 }
